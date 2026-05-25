@@ -12,6 +12,28 @@ This version uses `tkwebview`, which renders through WebView2 on Windows. That g
 pip install -r requirements.txt
 ```
 
+## Frontend Bundle
+
+When your frontend is inside `view/html`, `view/css`, and `view/js`, run:
+
+```bash
+py deploy_content.py
+```
+
+This command reads every HTML file in `view/html`, loads the CSS and JS referenced by that HTML, and generates a file called `frontend.py`.
+
+Why this exists:
+
+- It embeds your frontend into Python so the app can open pages without depending on loose `.html`, `.css`, and `.js` files at runtime.
+- It makes packaging and deployment easier, because `WebViewWindow("view/html/index.html", ...)` can load the page from the generated assets.
+- It keeps the API the same on the Python side, while the library injects the bundled HTML/CSS/JS internally.
+
+Important:
+
+- Run `py deploy_content.py` every time you change files in `view/html`, `view/css`, or `view/js`.
+- If `frontend.py` exists, `WebViewWindow` will prefer the bundled assets.
+- If `frontend.py` does not exist, the library falls back to loading the physical files from disk.
+
 ## Quick Start
 
 ```python
@@ -38,7 +60,7 @@ pip install -r requirements.txt
 ```python
 from webview_tkinter import WebViewWindow
 
-web_app = WebViewWindow("index.html", window_size=(1280, 720), title="Bridge demo")
+web_app = WebViewWindow("view/html/index.html", window_size=(1280, 720), title="Bridge demo")
 web_app.run()
 ```
 
@@ -51,7 +73,7 @@ def receive_from_frontend(params):
     print(params)
     return f"Received in Python: {params}"
 
-web_app = WebViewWindow("index.html", window_size=(1280, 720), title="Bridge demo")
+web_app = WebViewWindow("view/html/index.html", window_size=(1280, 720), title="Bridge demo")
 web_app.expose_function.receive("ping_python", receive_from_frontend)
 web_app.run()
 ```
@@ -76,6 +98,7 @@ open_webview("https://example.com", window_size=(1024, 768))
 ## Parameters
 
 - `site`: URL with `http://` or `https://`, or a path to an existing local file.
+- `site`: URL with `http://` or `https://`, a local file path, or a bundled page path such as `view/html/index.html` when `frontend.py` has been generated.
 - `window_size`: optional `(width, height)` tuple. Default: `(1200, 800)`.
 - `title`: optional window title.
 - `min_size`: minimum window size.
@@ -121,7 +144,7 @@ open_webview("https://example.com", window_size=(1024, 768))
 
 ```python
 app = WebViewWindow(
-    "index.html",
+    "view/html/index.html",
     window_size=(1280, 720),
     title="My app",
     icon_path="app.ico",
@@ -145,13 +168,13 @@ from webview_tkinter import WebViewWindow
 def receive_from_frontend(params):
     if params and params[0] == "open-screen":
         web_app.topLevel(
-            "tela1.html",
+            "view/html/tela1.html",
             window_size=(900, 600),
             title="Child window",
         )
     return "ok"
 
-web_app = WebViewWindow("index.html", window_size=(1280, 720), title="Main window")
+web_app = WebViewWindow("view/html/index.html", window_size=(1280, 720), title="Main window")
 web_app.expose_function.receive("ping_python", receive_from_frontend)
 web_app.run()
 ```
@@ -168,9 +191,9 @@ def present(params):
     web_app.expose_function.send("ping_python", "reply", params)
     return f"Received in Python: {params}"
 
-web_app = WebViewWindow("index.html")
-web_app.openAccessExpose(["index.html", "screen1.html"])
-web_app.openAccessSite(["index.html", "screen1.html"])
+web_app = WebViewWindow("view/html/index.html")
+web_app.openAccessExpose(["view/html/index.html", "view/html/tela1.html"])
+web_app.openAccessSite(["view/html/index.html", "view/html/tela1.html"])
 web_app.expose_function.receive("ping_python", present)
 web_app.run()
 ```
@@ -207,7 +230,7 @@ HTML:
 </script>
 ```
 
-On local pages such as `index.html`, `screen1.html`, and `screen2.html`, JavaScript calls `window.send.functionName(...)`. Python registers that bridge with `web_app.expose_function.receive(...)`.
+On local pages such as `view/html/index.html`, `view/html/tela1.html`, and `view/html/tela2.html`, JavaScript calls `window.send.functionName(...)`. Python registers that bridge with `web_app.expose_function.receive(...)`.
 
 ## Access Control
 
@@ -215,8 +238,8 @@ You can limit which pages are allowed to use the bridge:
 
 ```python
 web_app.openAccessExpose([
-    "index.html",
-    "screen1.html",
+    "view/html/index.html",
+    "view/html/tela1.html",
     "https://mysite.com/dashboard",
 ])
 ```
@@ -227,13 +250,13 @@ You can also limit which pages/sites may be opened:
 
 ```python
 web_app.openAccessSite([
-    "index.html",
-    "screen1.html",
+    "view/html/index.html",
+    "view/html/tela1.html",
     "https://mysite.com/dashboard",
 ])
 ```
 
-If navigation tries to open anything outside that list, the library blocks it and returns to the home page defined in `WebViewWindow("index.html", ...)`.
+If navigation tries to open anything outside that list, the library blocks it and returns to the home page defined in `WebViewWindow("view/html/index.html", ...)`.
 
 ## Extra Safety In `receive`
 
@@ -306,3 +329,4 @@ HTML:
 - This library is focused on Windows.
 - It requires Microsoft Edge WebView2 Runtime to be installed.
 - Local `.html` files are supported as long as the path exists.
+- For bundled frontend deploys, generate `frontend.py` with `py deploy_content.py` after changing frontend files.

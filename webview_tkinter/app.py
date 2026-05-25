@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import importlib.util
 import json
 import threading
 import tkinter as tk
@@ -10,6 +11,27 @@ from typing import Iterable
 from urllib.parse import unquote, urlparse
 
 from tkwebview import TkWebview
+
+
+def _load_frontend_assets() -> tuple[dict[str, dict[str, object]], set[str]]:
+    frontend_path = Path(__file__).resolve().parent.parent / "frontend.py"
+    if not frontend_path.exists():
+        return {}, set()
+
+    spec = importlib.util.spec_from_file_location("_webview_tkinter_frontend_assets", frontend_path)
+    if spec is None or spec.loader is None:
+        return {}, set()
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assets = getattr(module, "ASSET_INDEX", {})
+    asset_names = set(getattr(module, "ASSET_NAMES", []))
+    if not isinstance(assets, dict):
+        return {}, set()
+    return assets, asset_names
+
+
+FRONTEND_ASSETS, FRONTEND_ASSET_NAMES = _load_frontend_assets()
 
 
 class AppProxy:
@@ -88,7 +110,7 @@ class WebViewWindow:
         window_options: dict[str, object] | None = None,
         attributes: dict[str, object] | None = None,
         _parent_root: tk.Tk | tk.Toplevel | None = None,
-        _is_toplevel: bool = False,
+        _is_top_level: bool = False,
     ) -> None:
         self.site = self._normalize_site(site)
         self.window_size = self._normalize_size(window_size)
@@ -110,10 +132,11 @@ class WebViewWindow:
         self.root: tk.Tk | tk.Toplevel | None = None
         self.browser: TkWebview | None = None
         self._parent_root = _parent_root
-        self._is_toplevel = _is_toplevel
+        self._is_top_level = _is_top_level
         self._child_windows: list["WebViewWindow"] = []
         self._icon_image: tk.PhotoImage | None = None
         self._home_site = self.site
+        self._current_asset_name = self._asset_name_from_site(self.site)
         self._bridge_scripts: dict[str, str] = {}
         self._exposed_functions: dict[str, tuple[object, bool]] = {}
         self._open_access_expose_rules: set[str] = set()
@@ -129,6 +152,7 @@ class WebViewWindow:
 window.send = window.send || {};
 window.receive = window.receive || {};
 window.__webviewTkinterReceive = window.__webviewTkinterReceive || {};
+window.__webviewTkinterCurrentAsset = null;
 window.__webviewTkinterEmit = (name, params) => {
   const callback = window.__webviewTkinterReceive[name];
   if (typeof callback === "function") {
@@ -143,6 +167,10 @@ window.__webviewTkinterEmit = (name, params) => {
             raise ValueError("site must be a valid URL or local file path.")
 
         site = site.strip()
+        asset_uri = self._asset_name_to_uri(site)
+        if asset_uri is not None:
+            return asset_uri
+
         if "://" in site:
             return site
 
@@ -153,6 +181,26 @@ window.__webviewTkinterEmit = (name, params) => {
         raise ValueError(
             "site must start with http://, https://, or point to an existing local file."
         )
+
+    def _asset_name_to_uri(self, site: str) -> str | None:
+        normalized_name = site.strip().replace("\\", "/")
+        if normalized_name in FRONTEND_ASSET_NAMES:
+            return f"asset://{normalized_name}"
+        return None
+
+    def _asset_name_from_site(self, site: str) -> str | None:
+        if site.startswith("asset://"):
+            return site.removeprefix("asset://")
+        return None
+
+    def _is_asset_site(self, site: str) -> bool:
+        return self._asset_name_from_site(site) is not None
+
+    def _normalize_asset_reference(self, target: str) -> str | None:
+        normalized = target.strip().replace("\\", "/")
+        if normalized in FRONTEND_ASSET_NAMES:
+            return self._asset_name_to_uri(normalized)
+        return None
 
     def _normalize_optional_path(self, path: str | None) -> str | None:
         if path is None:
@@ -168,10 +216,16 @@ window.__webviewTkinterEmit = (name, params) => {
             raise ValueError("Each access rule must be a valid URL or file path.")
 
         target = target.strip()
+        asset_uri = self._normalize_asset_reference(target)
+        if asset_uri is not None:
+            return asset_uri
+
         if "://" in target:
             parsed = urlparse(target)
             if parsed.scheme.lower() == "file":
                 return self._file_url_to_uri(parsed.path or "")
+            if parsed.scheme.lower() == "asset":
+                return f"asset://{unquote((parsed.netloc or '') + (parsed.path or '')).lstrip('/')}"
             normalized_path = unquote(parsed.path or "")
             return f"{parsed.scheme.lower()}://{(parsed.netloc or '').lower()}{normalized_path}"
 
@@ -185,7 +239,19 @@ window.__webviewTkinterEmit = (name, params) => {
         return Path(normalized_path).resolve().as_uri()
 
     def _normalize_request_origin(self, href: str) -> str:
+        asset_uri = self._normalize_asset_reference(href)
+        if asset_uri is not None:
+            return asset_uri
+
+        if href.startswith("asset://"):
+            return href
+
         parsed = urlparse(href)
+        if parsed.scheme == "about" and (parsed.path or "").lower() == "blank":
+            if self._current_asset_name is not None:
+                return f"asset://{self._current_asset_name}"
+            return "about:blank"
+
         if parsed.scheme == "file":
             return self._file_url_to_uri(parsed.path or "")
 
@@ -363,16 +429,44 @@ window.__webviewTkinterEmit = (name, params) => {
         return (
             f"window.send = window.send || {{}};"
             f"window.send.{name} = (...args) => "
-            f"window.{name}({{__webview_tkinter_meta__: {{ href: window.location.href }} }}, ...args);"
+            f"window.{name}({{__webview_tkinter_meta__: {{ "
+            f"href: window.location.href, asset: window.__webviewTkinterCurrentAsset "
+            f"}} }}, ...args);"
         )
 
     def _get_site_access_guard_script(self) -> str:
         home_site = json.dumps(self._home_site, ensure_ascii=True)
         allowed_sites = json.dumps(sorted(self._open_access_site_rules), ensure_ascii=True)
+        known_assets = json.dumps(sorted(FRONTEND_ASSET_NAMES), ensure_ascii=True)
         return f"""
+window.__webviewTkinterKnownAssets = new Set({known_assets});
 window.__webviewTkinterAllowedSites = new Set({allowed_sites});
 window.__webviewTkinterHomeSite = {home_site};
+window.__webviewTkinterResolveAssetPath = (value) => {{
+  if (!window.__webviewTkinterCurrentAsset || !value) {{
+    return null;
+  }}
+  if (/^(https?:|file:|data:|javascript:|mailto:|tel:)/i.test(value)) {{
+    return null;
+  }}
+  const currentAsset = window.__webviewTkinterCurrentAsset || "";
+  const currentDir = currentAsset.includes("/") ? currentAsset.slice(0, currentAsset.lastIndexOf("/") + 1) : "";
+  try {{
+    const url = new URL(value, "https://webview.local/" + currentDir);
+    const normalized = url.pathname.replace(/^\\//, "");
+    if (window.__webviewTkinterKnownAssets.has(normalized)) {{
+      return normalized;
+    }}
+  }} catch (error) {{
+    return null;
+  }}
+  return null;
+}};
 window.__webviewTkinterNormalizeUrl = (value) => {{
+  const assetTarget = window.__webviewTkinterResolveAssetPath(value);
+  if (assetTarget) {{
+    return "asset://" + assetTarget;
+  }}
   try {{
     return new URL(value, window.location.href).href;
   }} catch (error) {{
@@ -381,13 +475,23 @@ window.__webviewTkinterNormalizeUrl = (value) => {{
 }};
 window.__webviewTkinterCanOpen = (value) => {{
   const normalized = window.__webviewTkinterNormalizeUrl(value);
-  return window.__webviewTkinterAllowedSites.has(normalized);
+  return !window.__webviewTkinterAllowedSites.size || window.__webviewTkinterAllowedSites.has(normalized);
 }};
 window.__webviewTkinterRedirectHome = () => {{
+  if ((window.__webviewTkinterHomeSite || "").startsWith("asset://")) {{
+    return window.__webview_tkinter_asset_navigate(
+      window.__webviewTkinterHomeSite.replace(/^asset:\\/\\//, "")
+    );
+  }}
   window.location.href = window.__webviewTkinterHomeSite;
 }};
 window.__webviewTkinterCheckAndOpen = (value) => {{
+  const assetTarget = window.__webviewTkinterResolveAssetPath(value);
   if (window.__webviewTkinterCanOpen(value)) {{
+    if (assetTarget) {{
+      window.__webview_tkinter_asset_navigate(assetTarget);
+      return false;
+    }}
     return true;
   }}
   alert("Access denied for this page.");
@@ -399,13 +503,16 @@ document.addEventListener("click", (event) => {{
   if (!link) {{
     return;
   }}
-  if (!window.__webviewTkinterCheckAndOpen(link.href)) {{
+  if (!window.__webviewTkinterCheckAndOpen(link.getAttribute("href") || link.href)) {{
     event.preventDefault();
   }}
 }}, true);
 const originalOpen = window.open.bind(window);
 window.open = (...args) => {{
-  if (!args.length || window.__webviewTkinterCheckAndOpen(args[0])) {{
+  if (!args.length) {{
+    return originalOpen(...args);
+  }}
+  if (window.__webviewTkinterCheckAndOpen(args[0])) {{
     return originalOpen(...args);
   }}
   return null;
@@ -431,9 +538,51 @@ window.location.replace = (value) => {{
             self.browser.init(script)
             self.browser.eval(script)
 
+    def _get_asset_navigation_script(self, asset_name: str) -> str:
+        asset_name_literal = json.dumps(asset_name, ensure_ascii=True)
+        asset_names_literal = json.dumps(sorted(FRONTEND_ASSET_NAMES), ensure_ascii=True)
+        allowed_sites_literal = json.dumps(sorted(self._open_access_site_rules), ensure_ascii=True)
+        home_site_literal = json.dumps(self._home_site, ensure_ascii=True)
+        return f"""
+window.__webviewTkinterCurrentAsset = {asset_name_literal};
+window.__webviewTkinterKnownAssets = new Set({asset_names_literal});
+window.__webviewTkinterAllowedSites = new Set({allowed_sites_literal});
+window.__webviewTkinterHomeSite = {home_site_literal};
+"""
+
+    def _inject_runtime_script(self, html: str, script: str) -> str:
+        script_tag = f"<script>\n{script}\n</script>"
+        if "</head>" in html:
+            return html.replace("</head>", f"{script_tag}\n</head>", 1)
+        if "<body" in html and ">" in html:
+            body_start = html.find(">")
+            if body_start != -1:
+                return f"{html[:body_start + 1]}\n{script_tag}\n{html[body_start + 1:]}"
+        return f"{script_tag}\n{html}"
+
+    def _load_current_site(self) -> None:
+        if self.browser is None:
+            return
+
+        asset_name = self._asset_name_from_site(self.site)
+        self._current_asset_name = asset_name
+
+        if asset_name is not None:
+            asset = FRONTEND_ASSETS.get(asset_name)
+            if asset is None:
+                raise FileNotFoundError(f"Bundled frontend asset not found: {asset_name}")
+            embedded_html = str(asset["embedded_html"])
+            runtime_script = self._get_asset_navigation_script(asset_name)
+            self.browser.set_html(self._inject_runtime_script(embedded_html, runtime_script))
+            return
+
+        self.browser.navigate(self.site)
+
     def _register_pending_bindings(self) -> None:
         if self.browser is None:
             return
+
+        self.browser.bindjs("__webview_tkinter_asset_navigate", self._handle_asset_navigation, is_async_return=False)
 
         for name, (callback, is_async_return) in self._exposed_functions.items():
             self.browser.bindjs(name, callback, is_async_return=is_async_return)
@@ -532,9 +681,9 @@ window.location.replace = (value) => {{
         }
 
     def create_window(self) -> tk.Tk | tk.Toplevel:
-        if self._is_toplevel:
+        if self._is_top_level:
             if self._parent_root is None:
-                raise RuntimeError("Toplevel windows require an existing parent window.")
+                raise RuntimeError("top_level windows require an existing parent window.")
             self.root = tk.Toplevel(self._parent_root)
         else:
             self.root = tk.Tk()
@@ -552,12 +701,12 @@ window.location.replace = (value) => {{
 
         self.browser.pack(fill="both", expand=True)
         self._register_pending_bindings()
-        self.browser.navigate(self.site)
+        self._load_current_site()
 
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         return self.root
 
-    def topLevel(
+    def top_level(
         self,
         site: str | None = None,
         window_size: tuple[int, int] | list[int] | None = None,
@@ -578,7 +727,7 @@ window.location.replace = (value) => {{
             child_kwargs["title"] = title
 
         child_kwargs["_parent_root"] = self.root
-        child_kwargs["_is_toplevel"] = True
+        child_kwargs["_is_top_level"] = True
 
         child_window = WebViewWindow(**child_kwargs)
         child_window._open_access_expose_rules = set(self._open_access_expose_rules)
@@ -588,6 +737,20 @@ window.location.replace = (value) => {{
         child_window.run()
         self._child_windows.append(child_window)
         return child_window
+
+    def topLevel(
+        self,
+        site: str | None = None,
+        window_size: tuple[int, int] | list[int] | None = None,
+        title: str | None = None,
+        **window_kwargs,
+    ) -> "WebViewWindow":
+        return self.top_level(
+            site=site,
+            window_size=window_size,
+            title=title,
+            **window_kwargs,
+        )
 
     def _register_receive_function(
         self,
@@ -609,7 +772,7 @@ window.location.replace = (value) => {{
             if payload_args and isinstance(payload_args[0], dict):
                 meta = payload_args[0].get("__webview_tkinter_meta__")
                 if isinstance(meta, dict):
-                    request_origin = meta.get("href")
+                    request_origin = meta.get("asset") or meta.get("href")
                     payload_args = payload_args[1:]
 
             self._assert_origin_allowed(request_origin)
@@ -641,17 +804,26 @@ window.location.replace = (value) => {{
         if normalized_origin not in self._open_access_expose_rules:
             raise PermissionError(f"Bridge blocked for this origin: {normalized_origin}")
 
+    def _handle_asset_navigation(self, target: str) -> bool:
+        self.navigate(target)
+        return True
+
     def _emit_to_frontend(self, name: str, *args) -> None:
         serialized_args = json.dumps(list(args), ensure_ascii=True)
         script = f"window.__webviewTkinterEmit('{name}', {serialized_args});"
         self.evaluate_js(script)
 
-    def openAccessExpose(
+    def open_access_expose(
         self, allowed_sources: list[str] | tuple[str, ...] | set[str]
     ) -> None:
         self._open_access_expose_rules = self._normalize_access_sources(allowed_sources)
 
-    def openAccessSite(
+    def openAccessExpose(
+        self, allowed_sources: list[str] | tuple[str, ...] | set[str]
+    ) -> None:
+        self.open_access_expose(allowed_sources)
+
+    def open_access_site(
         self, allowed_sources: list[str] | tuple[str, ...] | set[str]
     ) -> None:
         normalized = self._normalize_access_sources(allowed_sources)
@@ -659,20 +831,26 @@ window.location.replace = (value) => {{
         self._open_access_site_rules = normalized
         self._install_bridge_script("site_access_guard", self._get_site_access_guard_script())
 
+    def openAccessSite(
+        self, allowed_sources: list[str] | tuple[str, ...] | set[str]
+    ) -> None:
+        self.open_access_site(allowed_sources)
+
     def lock(self, allowed_sources: list[str] | tuple[str, ...] | set[str]) -> None:
-        self.openAccessExpose(allowed_sources)
+        self.open_access_expose(allowed_sources)
 
     def navigate(self, site: str) -> None:
         normalized_site = self._normalize_site(site)
 
         if self._open_access_site_rules and normalized_site not in self._open_access_site_rules:
             if self.browser is not None:
-                self.browser.navigate(self._home_site)
-            raise PermissionError(f"Site blocked by openAccessSite(): {normalized_site}")
+                self.site = self._home_site
+                self._load_current_site()
+            raise PermissionError(f"Site blocked by open_access_site(): {normalized_site}")
 
         self.site = normalized_site
         if self.browser is not None:
-            self.browser.navigate(self.site)
+            self._load_current_site()
 
     def expose_object(
         self,
@@ -779,7 +957,7 @@ window.location.replace = (value) => {{
         if self.root is None:
             self.create_window()
 
-        if self.root is not None and not self._is_toplevel:
+        if self.root is not None and not self._is_top_level:
             self.root.mainloop()
 
 

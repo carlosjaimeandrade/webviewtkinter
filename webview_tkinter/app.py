@@ -261,6 +261,9 @@ class WebViewWindow:
         self._exposed_functions: dict[str, tuple[object, bool]] = {}
         self._open_access_expose_rules: set[str] = set()
         self._open_access_site_rules: set[str] = set()
+        self._middlewares: list[dict[str, object]] = []
+        self._middleware_redirect_target: str | None = None
+        self._is_running_middleware = False
         self._frontend_call_state = threading.local()
         self._debug_mode_enabled = _debug_mode_enabled
         self._last_window_state: str | None = None
@@ -897,6 +900,67 @@ window.__webviewTkinterHomeSite = {home_site_literal};
 
         self.browser.navigate(self.site)
 
+    def _invoke_middleware_callback(self, callback, site: str):
+        try:
+            signature = inspect.signature(callback)
+        except (TypeError, ValueError):
+            return callback(site)
+
+        parameters = list(signature.parameters.values())
+        has_varargs = any(
+            parameter.kind is inspect.Parameter.VAR_POSITIONAL
+            for parameter in parameters
+        )
+
+        positional_parameters = [
+            parameter
+            for parameter in parameters
+            if parameter.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+
+        if has_varargs or positional_parameters:
+            return callback(site)
+        return callback()
+
+    def _apply_middlewares(self, normalized_site: str) -> str | None:
+        if self._is_running_middleware:
+            return normalized_site
+
+        self._middleware_redirect_target = None
+        self._is_running_middleware = True
+        try:
+            for middleware in self._middlewares:
+                protected_sites = middleware["sites"]
+                if normalized_site not in protected_sites:
+                    continue
+
+                result = self._invoke_middleware_callback(
+                    middleware["callback"],
+                    normalized_site,
+                )
+
+                redirect_target = self._middleware_redirect_target
+                self._middleware_redirect_target = None
+
+                if isinstance(result, str) and result.strip():
+                    redirect_target = result.strip()
+
+                if redirect_target is not None:
+                    normalized_site = self._normalize_site(redirect_target)
+                    continue
+
+                if result is False:
+                    return None
+
+            return normalized_site
+        finally:
+            self._is_running_middleware = False
+            self._middleware_redirect_target = None
+
     def _register_pending_bindings(self) -> None:
         if self.browser is None:
             return
@@ -1454,7 +1518,7 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         self.browser.pack(fill="both", expand=True)
         self._bind_window_events()
         self._register_pending_bindings()
-        self._load_current_site()
+        self.navigate(self.site)
         self._last_window_state = self._get_window_state()
         self._last_window_geometry = self._get_window_geometry()
 
@@ -1605,12 +1669,30 @@ window.__webviewTkinterHomeSite = {home_site_literal};
     def lock(self, allowed_sources: list[str] | tuple[str, ...] | set[str]) -> None:
         self.open_access_expose(allowed_sources)
 
+    def middleware(
+        self,
+        allowed_sources: list[str] | tuple[str, ...] | set[str],
+        callback,
+    ) -> None:
+        if not callable(callback):
+            raise TypeError("callback must be callable.")
+
+        self._middlewares.append(
+            {
+                "sites": self._normalize_access_sources(allowed_sources),
+                "callback": callback,
+            }
+        )
+
     def navigate(self, site: str) -> None:
         if self.root is not None and threading.current_thread() is not threading.main_thread():
             self._run_on_ui_thread_async(self.navigate, site)
             return
 
         normalized_site = self._normalize_site(site)
+        normalized_site = self._apply_middlewares(normalized_site)
+        if normalized_site is None:
+            return
 
         if self._open_access_site_rules and normalized_site not in self._open_access_site_rules:
             if self.browser is not None:
@@ -1621,6 +1703,15 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         self.site = normalized_site
         if self.browser is not None:
             self._load_current_site()
+
+    def redirect(self, site: str) -> None:
+        normalized_site = self._normalize_site(site)
+
+        if self._is_running_middleware:
+            self._middleware_redirect_target = normalized_site
+            return
+
+        self.navigate(normalized_site)
 
     def expose_object(
         self,

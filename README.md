@@ -127,8 +127,10 @@ open_webview("https://example.com", window_size=(1024, 768))
 
 - `run()`: opens the window and starts the Tkinter loop.
 - `navigate(site)`: navigates to another page.
+- `redirect(site)`: redirects to another page. When used inside `middleware(...)`, it changes the destination before the page is opened.
 - `openAccessExpose(list)`: limits which files/URLs can call the JS -> Python bridge.
 - `openAccessSite(list)`: limits which files/URLs can be opened in the embedded browser.
+- `middleware(list, callback)`: runs a callback automatically whenever navigation targets one of the listed pages.
 - `lock(list)`: legacy alias for `openAccessExpose(list)`.
 - `expose_function.receive(name, callback)`: registers a Python callback that can be called from the frontend.
 - `expose_function.send(name, *args)`: sends data from Python to frontend callbacks.
@@ -602,6 +604,45 @@ web_app.openAccessSite([
 ```
 
 If navigation tries to open anything outside that list, the library blocks it and returns to the home page defined in `WebViewWindow("view/html/index.html", ...)`.
+
+## Middleware And Redirect
+
+You can run a Python function automatically before opening specific pages:
+
+```python
+from webview_tkinter import WebViewWindow
+
+def auth(site):
+    print("Checking access to:", site)
+
+    if site == "view/html/index.html":
+        web_app.redirect("view/html/tela2.html")
+
+    return True
+
+web_app = WebViewWindow("view/html/index.html", window_size=(1280, 720), title="Bridge demo")
+
+web_app.middleware(
+    [
+        "view/html/index.html",
+        "view/html/tela1.html",
+        "view/html/tela2.html",
+        "view/html/alert.html",
+    ],
+    auth,
+)
+
+web_app.run()
+```
+
+How it works:
+
+- The callback receives the page being opened.
+- If the page is in the middleware list, the callback runs automatically.
+- `web_app.redirect("view/html/tela2.html")` changes the destination page.
+- Returning `False` cancels the navigation.
+- Returning `True` keeps the normal flow.
+- The initial page passed to `WebViewWindow(...)` also goes through the middleware.
 
 ## Extra Safety In `receive`
 

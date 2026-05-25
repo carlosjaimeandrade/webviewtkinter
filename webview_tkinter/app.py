@@ -110,7 +110,7 @@ class FunctionBridge:
         name: str,
         callback,
         *,
-        run_on_ui_thread: bool = True,
+        run_on_ui_thread: bool = False,
         allow_unsafe_js: bool = False,
     ) -> None:
         self.receive(
@@ -125,7 +125,7 @@ class FunctionBridge:
         name: str,
         callback,
         *,
-        run_on_ui_thread: bool = True,
+        run_on_ui_thread: bool = False,
         allow_unsafe_js: bool = True,
     ) -> None:
         self.window._register_receive_function(
@@ -1282,6 +1282,11 @@ window.__webviewTkinterHomeSite = {home_site_literal};
             return
         self.root.after(0, lambda: callback(*args))
 
+    def _call_on_ui_thread(self, callback, *args):
+        if self.root is None:
+            return callback(*args)
+        return self._run_on_tk_thread(callback, *args)
+
     def _restore_from_tray(self, *_args) -> None:
         self._run_on_ui_thread_async(self.restore_from_system_tray)
 
@@ -1454,6 +1459,16 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         title: str | None = None,
         **window_kwargs,
     ) -> "WebViewWindow":
+        if self.root is not None and threading.current_thread() is not threading.main_thread():
+            return self._run_on_tk_thread(
+                lambda: self._create_child_window(
+                    site=site or self.site,
+                    window_size=window_size,
+                    title=title,
+                    **window_kwargs,
+                )
+            )
+
         return self._create_child_window(
             site=site or self.site,
             window_size=window_size,
@@ -1480,7 +1495,7 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         name: str,
         callback,
         *,
-        run_on_ui_thread: bool = True,
+        run_on_ui_thread: bool = False,
         allow_unsafe_js: bool = False,
     ) -> None:
         if not name.isidentifier():
@@ -1563,6 +1578,10 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         self.open_access_expose(allowed_sources)
 
     def navigate(self, site: str) -> None:
+        if self.root is not None and threading.current_thread() is not threading.main_thread():
+            self._run_on_ui_thread_async(self.navigate, site)
+            return
+
         normalized_site = self._normalize_site(site)
 
         if self._open_access_site_rules and normalized_site not in self._open_access_site_rules:
@@ -1581,7 +1600,7 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         instance: object,
         methods: list[str] | tuple[str, ...] | None = None,
         *,
-        run_on_ui_thread: bool = True,
+        run_on_ui_thread: bool = False,
     ) -> None:
         if not object_name.isidentifier():
             raise ValueError("The exposed object name must be a valid identifier.")
@@ -1612,40 +1631,40 @@ window.__webviewTkinterHomeSite = {home_site_literal};
     def set_title(self, title: str) -> None:
         self.title = title
         if self.root is not None:
-            self.root.title(title)
+            self._call_on_ui_thread(self.root.title, title)
 
     def set_window_size(self, width: int, height: int) -> None:
         self.window_size = self._normalize_size((width, height))
         if self.root is not None:
-            self._apply_geometry()
+            self._call_on_ui_thread(self._apply_geometry)
 
     def set_position(self, x: int, y: int) -> None:
         self.position = self._normalize_point((x, y))
         self.center = False
         if self.root is not None:
-            self._apply_geometry()
+            self._call_on_ui_thread(self._apply_geometry)
 
     def set_fullscreen(self, enabled: bool) -> None:
         self.fullscreen = enabled
         if self.root is not None:
-            self.root.attributes("-fullscreen", enabled)
+            self._call_on_ui_thread(self.root.attributes, "-fullscreen", enabled)
 
     def set_topmost(self, enabled: bool) -> None:
         self.topmost = enabled
         if self.root is not None:
-            self.root.attributes("-topmost", enabled)
+            self._call_on_ui_thread(self.root.attributes, "-topmost", enabled)
 
     def reload(self) -> None:
         if self.browser is not None:
-            self.browser.reload()
+            self._call_on_ui_thread(self.browser.reload)
 
     def go_back(self) -> None:
         if self.browser is not None:
-            self.browser.go_back()
+            self._call_on_ui_thread(self.browser.go_back)
 
     def go_forward(self) -> None:
         if self.browser is not None:
-            self.browser.go_forward()
+            self._call_on_ui_thread(self.browser.go_forward)
 
     def evaluate_js(self, script: str) -> None:
         is_frontend_call = getattr(self._frontend_call_state, "active", False)
@@ -1657,13 +1676,17 @@ window.__webviewTkinterHomeSite = {home_site_literal};
             )
 
         if self.browser is not None:
-            self.browser.eval(script)
+            self._call_on_ui_thread(self.browser.eval, script)
 
     def unsafe_evaluate_js(self, script: str) -> None:
         if self.browser is not None:
-            self.browser.eval(script)
+            self._call_on_ui_thread(self.browser.eval, script)
 
     def close(self) -> None:
+        if self.root is not None and threading.current_thread() is not threading.main_thread():
+            self._run_on_ui_thread_async(self.close)
+            return
+
         if self._close_event_emitted:
             return
 

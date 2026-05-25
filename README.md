@@ -575,6 +575,8 @@ HTML:
 
 On local pages such as `view/html/index.html`, `view/html/tela1.html`, and `view/html/tela2.html`, JavaScript calls `window.send.functionName(...)`. Python registers that bridge with `web_app.expose_function.receive(...)`.
 
+By default, callbacks registered with `expose_function.receive(...)` run outside the Tkinter UI thread. This keeps the window responsive when backend work takes time. If you intentionally need to run a callback on the UI thread, pass `run_on_ui_thread=True`.
+
 ## Access Control
 
 You can limit which pages are allowed to use the bridge:
@@ -604,6 +606,8 @@ If navigation tries to open anything outside that list, the library blocks it an
 ## Extra Safety In `receive`
 
 By default, while a callback registered with `expose_function.receive(...)` is running, the library blocks `evaluate_js()`. This helps prevent frontend-provided data from being reused unsafely as raw JavaScript.
+
+Even when a callback is running in the background, UI-facing methods such as `expose_function.send(...)`, `navigate(...)`, `set_title(...)`, `reload()`, and `close()` are forwarded back to the Tkinter thread automatically.
 
 Use the safer channel:
 

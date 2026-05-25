@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pprint
 import re
+import base64
+import mimetypes
 from pathlib import Path
 
 
@@ -18,6 +20,10 @@ SCRIPT_TAG_RE = re.compile(
     r'<script(?=[^>]*\bsrc=["\'](?P<src>[^"\']+)["\'])[^>]*>\s*</script>',
     re.IGNORECASE,
 )
+IMAGE_TAG_RE = re.compile(
+    r'(<img\b[^>]*\bsrc=["\'])(?P<src>[^"\']+)(["\'][^>]*>)',
+    re.IGNORECASE,
+)
 
 
 def to_posix(path: Path) -> str:
@@ -30,6 +36,18 @@ def resolve_relative_asset(html_path: Path, asset_ref: str) -> Path:
 
 def escape_inline_script(script_content: str) -> str:
     return script_content.replace("</script>", "<\\/script>")
+
+
+def should_bundle_asset(asset_ref: str) -> bool:
+    return not re.match(r"^(?:[a-z][a-z0-9+.-]*:|//|#)", asset_ref, re.IGNORECASE)
+
+
+def encode_local_asset_as_data_url(asset_path: Path) -> str:
+    mime_type, _ = mimetypes.guess_type(asset_path.name)
+    if mime_type is None:
+        mime_type = "application/octet-stream"
+    encoded = base64.b64encode(asset_path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
 
 
 def inline_linked_assets(html_path: Path, html_content: str) -> tuple[str, dict[str, str], dict[str, str]]:
@@ -52,8 +70,17 @@ def inline_linked_assets(html_path: Path, html_content: str) -> tuple[str, dict[
         safe_script = escape_inline_script(script_content)
         return f'<script data-bundled-src="{src}">\n{safe_script}\n</script>'
 
+    def replace_image(match: re.Match[str]) -> str:
+        src = match.group("src")
+        if not should_bundle_asset(src):
+            return match.group(0)
+        image_path = resolve_relative_asset(html_path, src)
+        data_url = encode_local_asset_as_data_url(image_path)
+        return f'{match.group(1)}{data_url}{match.group(3)}'
+
     embedded_html = LINK_TAG_RE.sub(replace_link, embedded_html)
     embedded_html = SCRIPT_TAG_RE.sub(replace_script, embedded_html)
+    embedded_html = IMAGE_TAG_RE.sub(replace_image, embedded_html)
     return embedded_html, css_assets, js_assets
 
 

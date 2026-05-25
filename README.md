@@ -14,6 +14,8 @@ git clone git@github.com:carlosjaimeandrade/webviewtkinter.git
 pip install -r requirements.txt
 ```
 
+**python is required https://www.python.org/downloads/
+
 ## Frontend Bundle
 
 When your frontend is inside `view/html`, `view/css`, and `view/js`, run:

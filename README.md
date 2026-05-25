@@ -43,7 +43,9 @@ web_app = WebViewWindow(
     "https://example.com",
     window_size=(1280, 720),
     title="My browser",
+    events=lambda event: print(event),
 )
+web_app.debug_mode(True)
 web_app.run()
 ```
 
@@ -115,6 +117,7 @@ open_webview("https://example.com", window_size=(1024, 768))
 - `overrideredirect`: removes the window frame and title bar.
 - `window_options`: extra options passed to `root.configure(...)`.
 - `attributes`: extra options passed to `root.attributes(...)`.
+- `events`: optional callback that receives Tkinter window lifecycle and state events for that specific window.
 
 ## Class Methods
 
@@ -132,13 +135,110 @@ open_webview("https://example.com", window_size=(1024, 768))
 - `go_forward()`: navigates forward.
 - `evaluate_js(script)`: executes JavaScript inside the page.
 - `unsafe_evaluate_js(script)`: executes JavaScript without the extra `receive` safety guard.
+- `debug_mode(enabled=True)`: enables or disables browser debug behavior.
 - `close()`: closes the window.
 - `set_title(title)`: changes the window title.
 - `set_window_size(width, height)`: changes the window size.
 - `set_position(x, y)`: moves the window.
 - `set_fullscreen(enabled)`: enables/disables fullscreen.
 - `set_topmost(enabled)`: enables/disables topmost mode.
+- `open_access_expose(list)`: `snake_case` version of `openAccessExpose(...)`.
+- `open_access_site(list)`: `snake_case` version of `openAccessSite(...)`.
+- `top_level(site=None, window_size=None, title=None, **kwargs)`: `snake_case` version of `topLevel(...)`.
+- `debugMode(enabled=True)`: `camelCase` alias for `debug_mode(...)`.
 - `topLevel(site=None, window_size=None, title=None, **kwargs)`: opens a child `Toplevel` web window.
+
+## Window Events
+
+You can listen to window events with the `events` callback:
+
+```python
+from webview_tkinter import WebViewWindow
+
+def events(event):
+    print(event)
+
+web_app = WebViewWindow(
+    "view/html/index.html",
+    window_size=(1280, 720),
+    title="Bridge demo",
+    events=events,
+)
+web_app.run()
+```
+
+You can also pass `events=...` to a child window:
+
+```python
+def events(event):
+    print(event)
+
+def open_top_level(params):
+    web_app.top_level(
+        "view/html/tela1.html",
+        title="Screen 1",
+        window_size=(800, 600),
+        events=events,
+    )
+    return f"Top level opened with params: {params}"
+```
+
+Each callback receives a dictionary like:
+
+```python
+{
+    "name": "minimized",
+    "title": "Bridge demo",
+    "site": "asset://view/html/index.html",
+    "asset": "view/html/index.html",
+    "state": "iconic",
+    "position": {"x": 120, "y": 80},
+    "size": {"width": 1280, "height": 720},
+    "is_top_level": False
+}
+```
+
+Available event names:
+
+- `created`
+- `close_requested`
+- `closing`
+- `closed`
+- `focus_in`
+- `focus_out`
+- `state_changed`
+- `minimized`
+- `maximized`
+- `restored`
+- `hidden`
+- `moved`
+- `resized`
+
+## Debug Mode
+
+You can enable a debug-friendly browser mode with:
+
+```python
+web_app = WebViewWindow("view/html/index.html", window_size=(1280, 720), title="Bridge demo")
+web_app.debug_mode(True)
+web_app.run()
+```
+
+What `debug_mode(True)` does:
+
+- Creates the WebView with browser debug support enabled.
+- Makes it possible to inspect the page and access browser developer features.
+
+What `debug_mode(False)` does:
+
+- Blocks the context menu.
+- Blocks common shortcuts such as `F12`, `Ctrl+Shift+I`, `Ctrl+Shift+J`, `Ctrl+Shift+C`, `Ctrl+U`, `Ctrl+S`, and `Ctrl+P`.
+- Blocks text selection and drag start to make browser access harder.
+
+Important:
+
+- If you want real browser debug/devtools access, call `debug_mode(True)` before `run()`.
+- After the WebView has already been created, the restricted behavior can still be applied, but debug/devtools availability depends on how the browser was created.
 
 ## Full Window Example
 
@@ -147,6 +247,7 @@ app = WebViewWindow(
     "view/html/index.html",
     window_size=(1280, 720),
     title="My app",
+    events=lambda event: print(event["name"]),
     icon_path="app.ico",
     min_size=(900, 600),
     max_size=(1600, 1000),
@@ -171,6 +272,7 @@ def receive_from_frontend(params):
             "view/html/tela1.html",
             window_size=(900, 600),
             title="Child window",
+            events=lambda event: print(event),
         )
     return "ok"
 

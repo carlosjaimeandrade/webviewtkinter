@@ -11,6 +11,48 @@ from typing import Iterable
 from urllib.parse import unquote, urlparse
 
 from tkwebview import TkWebview
+from tkwebview.core import Webview
+
+
+class ConfigurableTkWebview(tk.Frame):
+    def __init__(self, master=None, *, debug: bool = False, **kwargs):
+        if master is None:
+            raise ValueError("ConfigurableTkWebview requires a Tkinter master window.")
+
+        super().__init__(master, bg="black", **kwargs)
+        self.update()
+        self.webview = Webview(debug=debug, window=self.winfo_id())
+        self.bind("<Configure>", self.on_configure)
+
+    def on_configure(self, event):
+        self.webview.resize()
+
+    def bindjs(self, name, fn, is_async_return=False):
+        return self.webview.bind(name, fn, is_async_return)
+
+    def eval(self, js):
+        return self.webview.eval(js)
+
+    def navigate(self, url):
+        return self.webview.navigate(url)
+
+    def init(self, js):
+        return self.webview.init(js)
+
+    def set_html(self, html):
+        return self.webview.set_html(html)
+
+    def destroy_webview(self):
+        self.destroy()
+
+    def reload(self):
+        return self.webview.reload()
+
+    def go_back(self):
+        return self.webview.go_back()
+
+    def go_forward(self):
+        return self.webview.go_forward()
 
 
 def _load_frontend_assets() -> tuple[dict[str, dict[str, object]], set[str]]:
@@ -109,8 +151,10 @@ class WebViewWindow:
         overrideredirect: bool = False,
         window_options: dict[str, object] | None = None,
         attributes: dict[str, object] | None = None,
+        events=None,
         _parent_root: tk.Tk | tk.Toplevel | None = None,
         _is_top_level: bool = False,
+        _debug_mode_enabled: bool = False,
     ) -> None:
         self.site = self._normalize_site(site)
         self.window_size = self._normalize_size(window_size)
@@ -129,8 +173,9 @@ class WebViewWindow:
         self.center = center
         self.window_options = dict(window_options or {})
         self.attributes = dict(attributes or {})
+        self._events_callback = self._normalize_events_callback(events)
         self.root: tk.Tk | tk.Toplevel | None = None
-        self.browser: TkWebview | None = None
+        self.browser: ConfigurableTkWebview | TkWebview | None = None
         self._parent_root = _parent_root
         self._is_top_level = _is_top_level
         self._child_windows: list["WebViewWindow"] = []
@@ -142,10 +187,15 @@ class WebViewWindow:
         self._open_access_expose_rules: set[str] = set()
         self._open_access_site_rules: set[str] = set()
         self._frontend_call_state = threading.local()
+        self._debug_mode_enabled = _debug_mode_enabled
+        self._last_window_state: str | None = None
+        self._last_window_geometry: tuple[int, int, int, int] | None = None
+        self._close_event_emitted = False
         self.expose_function = FunctionBridge(self)
 
         app._bind(self)
         self._install_bridge_script("bridge_core", self._get_bridge_core_script())
+        self._install_bridge_script("debug_runtime", self._get_debug_runtime_script())
 
     def _get_bridge_core_script(self) -> str:
         return """
@@ -153,6 +203,7 @@ window.send = window.send || {};
 window.receive = window.receive || {};
 window.__webviewTkinterReceive = window.__webviewTkinterReceive || {};
 window.__webviewTkinterCurrentAsset = null;
+window.__webviewTkinterDebugMode = false;
 window.__webviewTkinterEmit = (name, params) => {
   const callback = window.__webviewTkinterReceive[name];
   if (typeof callback === "function") {
@@ -160,6 +211,72 @@ window.__webviewTkinterEmit = (name, params) => {
   }
   return null;
 };
+"""
+
+    def _get_debug_runtime_script(self) -> str:
+        debug_mode = "true" if self._debug_mode_enabled else "false"
+        return f"""
+window.__webviewTkinterDebugMode = {debug_mode};
+window.__webviewTkinterApplyDebugMode = () => {{
+  const existingStyle = document.getElementById("__webviewTkinterDebugStyle");
+  if (existingStyle) {{
+    existingStyle.remove();
+  }}
+  if (window.__webviewTkinterDebugMode) {{
+    return;
+  }}
+
+  const style = document.createElement("style");
+  style.id = "__webviewTkinterDebugStyle";
+  style.textContent = `
+    html, body {{
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+    }}
+  `;
+  document.documentElement.appendChild(style);
+}};
+window.__webviewTkinterHandleDebugBlock = (event) => {{
+  if (window.__webviewTkinterDebugMode) {{
+    return;
+  }}
+
+  const blockedKey =
+    event.key === "F12" ||
+    (event.ctrlKey && event.shiftKey && ["I", "J", "C", "K"].includes((event.key || "").toUpperCase())) ||
+    (event.ctrlKey && ["U", "S", "P"].includes((event.key || "").toUpperCase()));
+
+  if (blockedKey) {{
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+  }}
+}};
+if (!window.__webviewTkinterDebugBindingsInstalled) {{
+  document.addEventListener("contextmenu", (event) => {{
+    if (!window.__webviewTkinterDebugMode) {{
+      event.preventDefault();
+    }}
+  }}, true);
+  document.addEventListener("keydown", window.__webviewTkinterHandleDebugBlock, true);
+  document.addEventListener("dragstart", (event) => {{
+    if (!window.__webviewTkinterDebugMode) {{
+      event.preventDefault();
+    }}
+  }}, true);
+  document.addEventListener("selectstart", (event) => {{
+    if (!window.__webviewTkinterDebugMode) {{
+      event.preventDefault();
+    }}
+  }}, true);
+  window.__webviewTkinterDebugBindingsInstalled = true;
+}}
+if (document.readyState === "loading") {{
+  document.addEventListener("DOMContentLoaded", window.__webviewTkinterApplyDebugMode, {{ once: true }});
+}} else {{
+  window.__webviewTkinterApplyDebugMode();
+}}
 """
 
     def _normalize_site(self, site: str) -> str:
@@ -210,6 +327,13 @@ window.__webviewTkinterEmit = (name, params) => {
         if not resolved.exists():
             raise ValueError(f"Path not found: {resolved}")
         return str(resolved)
+
+    def _normalize_events_callback(self, events):
+        if events is None:
+            return None
+        if not callable(events):
+            raise TypeError("events must be a callable function or method.")
+        return events
 
     def _normalize_lock_target(self, target: str) -> str:
         if not isinstance(target, str) or not target.strip():
@@ -678,7 +802,150 @@ window.__webviewTkinterHomeSite = {home_site_literal};
             "overrideredirect": self.overrideredirect_enabled,
             "window_options": dict(self.window_options),
             "attributes": dict(self.attributes),
+            "events": self._events_callback,
+            "_debug_mode_enabled": self._debug_mode_enabled,
         }
+
+    def _get_window_state(self) -> str | None:
+        if self.root is None:
+            return None
+        try:
+            state = self.root.state()
+        except tk.TclError:
+            return None
+        return str(state).lower()
+
+    def _get_window_geometry(self) -> tuple[int, int, int, int] | None:
+        if self.root is None:
+            return None
+        try:
+            return (
+                int(self.root.winfo_x()),
+                int(self.root.winfo_y()),
+                int(self.root.winfo_width()),
+                int(self.root.winfo_height()),
+            )
+        except tk.TclError:
+            return None
+
+    def _emit_window_event(self, event_name: str, **extra) -> None:
+        if self._events_callback is None:
+            return
+
+        geometry = self._get_window_geometry()
+        position = None
+        size = None
+        if geometry is not None:
+            pos_x, pos_y, width, height = geometry
+            position = {"x": pos_x, "y": pos_y}
+            size = {"width": width, "height": height}
+
+        payload = {
+            "name": event_name,
+            "title": self.title,
+            "site": self.site,
+            "asset": self._current_asset_name,
+            "state": self._get_window_state(),
+            "position": position,
+            "size": size,
+            "is_top_level": self._is_top_level,
+        }
+        payload.update(extra)
+
+        try:
+            self._events_callback(payload)
+        except Exception:
+            pass
+
+    def _update_window_state(self, source: str) -> None:
+        current_state = self._get_window_state()
+        previous_state = self._last_window_state
+
+        if current_state is None or current_state == previous_state:
+            return
+
+        self._last_window_state = current_state
+        self._emit_window_event(
+            "state_changed",
+            source=source,
+            previous_state=previous_state,
+            current_state=current_state,
+        )
+
+        if current_state == "iconic":
+            self._emit_window_event("minimized", source=source)
+        elif current_state == "zoomed":
+            self._emit_window_event("maximized", source=source)
+        elif current_state == "normal" and previous_state in {"iconic", "zoomed"}:
+            self._emit_window_event("restored", source=source)
+        elif current_state == "withdrawn":
+            self._emit_window_event("hidden", source=source)
+
+    def _on_window_map(self, event) -> None:
+        self._update_window_state("map")
+
+    def _on_window_unmap(self, event) -> None:
+        self._update_window_state("unmap")
+
+    def _on_window_focus_in(self, event) -> None:
+        self._emit_window_event("focus_in")
+
+    def _on_window_focus_out(self, event) -> None:
+        self._emit_window_event("focus_out")
+
+    def _on_window_configure(self, event) -> None:
+        geometry = self._get_window_geometry()
+        previous_geometry = self._last_window_geometry
+        if geometry is not None and previous_geometry is not None:
+            prev_x, prev_y, prev_width, prev_height = previous_geometry
+            pos_x, pos_y, width, height = geometry
+            if (pos_x, pos_y) != (prev_x, prev_y):
+                self._emit_window_event(
+                    "moved",
+                    previous_position={"x": prev_x, "y": prev_y},
+                    current_position={"x": pos_x, "y": pos_y},
+                )
+            if (width, height) != (prev_width, prev_height):
+                self._emit_window_event(
+                    "resized",
+                    previous_size={"width": prev_width, "height": prev_height},
+                    current_size={"width": width, "height": height},
+                )
+
+        self._last_window_geometry = geometry
+        self._update_window_state("configure")
+
+    def _bind_window_events(self) -> None:
+        if self.root is None:
+            return
+
+        self.root.bind("<Map>", self._on_window_map, add="+")
+        self.root.bind("<Unmap>", self._on_window_unmap, add="+")
+        self.root.bind("<FocusIn>", self._on_window_focus_in, add="+")
+        self.root.bind("<FocusOut>", self._on_window_focus_out, add="+")
+        self.root.bind("<Configure>", self._on_window_configure, add="+")
+
+    def _handle_close_request(self) -> None:
+        self._emit_window_event("close_requested")
+        self.close()
+
+    def debug_mode(self, enabled: bool = True) -> None:
+        if not isinstance(enabled, bool):
+            raise TypeError("debug_mode() expects a boolean value.")
+
+        if self.browser is not None and enabled and not self._debug_mode_enabled:
+            raise RuntimeError(
+                "Enable debug_mode(True) before run() so the browser can be created with developer tools enabled."
+            )
+
+        self._debug_mode_enabled = enabled
+        self._install_bridge_script("debug_runtime", self._get_debug_runtime_script())
+
+        if self.browser is not None:
+            self.evaluate_js(self._get_debug_runtime_script())
+
+    def debugMode(self, enabled: bool = True) -> None:
+        self.debug_mode(enabled)
 
     def create_window(self) -> tk.Tk | tk.Toplevel:
         if self._is_top_level:
@@ -690,7 +957,7 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         self._apply_window_settings()
 
         try:
-            self.browser = TkWebview(self.root)
+            self.browser = ConfigurableTkWebview(self.root, debug=self._debug_mode_enabled)
         except Exception as exc:
             if self.root is not None:
                 self.root.destroy()
@@ -700,10 +967,14 @@ window.__webviewTkinterHomeSite = {home_site_literal};
             ) from exc
 
         self.browser.pack(fill="both", expand=True)
+        self._bind_window_events()
         self._register_pending_bindings()
         self._load_current_site()
+        self._last_window_state = self._get_window_state()
+        self._last_window_geometry = self._get_window_geometry()
 
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.root.protocol("WM_DELETE_WINDOW", self._handle_close_request)
+        self._emit_window_event("created")
         return self.root
 
     def top_level(
@@ -941,6 +1212,12 @@ window.__webviewTkinterHomeSite = {home_site_literal};
             self.browser.eval(script)
 
     def close(self) -> None:
+        if self._close_event_emitted:
+            return
+
+        self._close_event_emitted = True
+        self._emit_window_event("closing")
+
         for child_window in list(self._child_windows):
             child_window.close()
         self._child_windows.clear()
@@ -952,6 +1229,8 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         if self.root is not None:
             self.root.destroy()
             self.root = None
+
+        self._emit_window_event("closed")
 
     def run(self) -> None:
         if self.root is None:

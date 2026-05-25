@@ -57,6 +57,8 @@ def inline_linked_assets(html_path: Path, html_content: str) -> tuple[str, dict[
 
     def replace_link(match: re.Match[str]) -> str:
         href = match.group("href")
+        if not should_bundle_asset(href):
+            return match.group(0)
         css_path = resolve_relative_asset(html_path, href)
         css_content = css_path.read_text(encoding="utf-8")
         css_assets[to_posix(css_path)] = css_content
@@ -64,6 +66,8 @@ def inline_linked_assets(html_path: Path, html_content: str) -> tuple[str, dict[
 
     def replace_script(match: re.Match[str]) -> str:
         src = match.group("src")
+        if not should_bundle_asset(src):
+            return match.group(0)
         script_path = resolve_relative_asset(html_path, src)
         script_content = script_path.read_text(encoding="utf-8")
         js_assets[to_posix(script_path)] = script_content

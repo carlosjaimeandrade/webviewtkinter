@@ -738,9 +738,19 @@ if (document.readyState === "loading") {{
         return (
             f"window.send = window.send || {{}};"
             f"window.send.{name} = (...args) => "
-            f"window.{name}({{__webview_tkinter_meta__: {{ "
+            f"Promise.resolve(window.{name}({{__webview_tkinter_meta__: {{ "
             f"href: window.location.href, asset: window.__webviewTkinterCurrentAsset "
-            f"}} }}, ...args);"
+            f"}} }}, ...args)).then((result) => {{ "
+            f"const normalized = Array.isArray(result) && result.length === 1 ? result[0] : result; "
+            f"if (normalized && normalized.__webview_tkinter_error__) {{ "
+            f"const details = normalized.__webview_tkinter_error__; "
+            f"const error = new Error(details.message || 'Frontend bridge callback failed.'); "
+            f"error.name = details.type || 'FrontendBridgeError'; "
+            f"error.details = details; "
+            f"throw error; "
+            f"}} "
+            f"return normalized; "
+            f"}});"
         )
 
     def _get_site_access_guard_script(self) -> str:
@@ -1503,7 +1513,7 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         if not callable(callback):
             raise TypeError("callback must be a callable function or method.")
 
-        def wrapped(*args):
+        def wrapped(resolve, *args):
             request_origin = None
             payload_args = args
 
@@ -1519,14 +1529,31 @@ window.__webviewTkinterHomeSite = {home_site_literal};
                 with self._frontend_callback_guard(allow_unsafe_js):
                     return self._invoke_callback(callback, *payload_args)
 
-            if run_on_ui_thread:
-                return self._run_on_tk_thread(guarded_invoke)
-            return guarded_invoke()
+            def runner():
+                try:
+                    if run_on_ui_thread:
+                        result = self._run_on_tk_thread(guarded_invoke)
+                    else:
+                        result = guarded_invoke()
+                except Exception as exc:
+                    resolve(
+                        {
+                            "__webview_tkinter_error__": {
+                                "type": exc.__class__.__name__,
+                                "message": str(exc),
+                            }
+                        }
+                    )
+                    return
 
-        self._exposed_functions[name] = (wrapped, False)
+                resolve(result)
+
+            threading.Thread(target=runner, daemon=True).start()
+
+        self._exposed_functions[name] = (wrapped, True)
 
         if self.browser is not None:
-            self.browser.bindjs(name, wrapped, is_async_return=False)
+            self.browser.bindjs(name, wrapped, is_async_return=True)
 
         self._install_bridge_script(f"send_{name}", self._make_send_registration_script(name))
         self._install_bridge_script(f"receive_{name}", self._make_receive_registration_script(name))
@@ -1549,7 +1576,8 @@ window.__webviewTkinterHomeSite = {home_site_literal};
     def _emit_to_frontend(self, name: str, *args) -> None:
         serialized_args = json.dumps(list(args), ensure_ascii=True)
         script = f"window.__webviewTkinterEmit('{name}', {serialized_args});"
-        self.evaluate_js(script)
+        if self.browser is not None:
+            self._run_on_ui_thread_async(self.browser.eval, script)
 
     def open_access_expose(
         self, allowed_sources: list[str] | tuple[str, ...] | set[str]

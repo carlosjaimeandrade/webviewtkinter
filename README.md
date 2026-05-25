@@ -7,7 +7,9 @@ A Python library for opening a Tkinter window with a modern embedded web page.
 This version uses `tkwebview`, which renders through WebView2 on Windows. That gives much better HTML, CSS, and JavaScript compatibility than `tkinterweb`.
 
 ## Installation
-
+```bash
+git clone git@github.com:carlosjaimeandrade/webviewtkinter.git
+```
 ```bash
 pip install -r requirements.txt
 ```

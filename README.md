@@ -259,6 +259,8 @@ Main alert parameters:
 - `padding`: controls the distance from the bottom-right corner of the screen.
 - `close_buttom`: if `True`, shows a visual close button inside the popup.
 - `close_button`: alternative spelling for the same behavior.
+- `close_button_class`: custom CSS class applied to the injected close button.
+- `close_button_use_default_style`: if `True`, injects the default close button style. If `False`, the page CSS controls the full visual style.
 - `events`: optional callback specific to the alert window.
 
 About `padding`:
@@ -287,6 +289,54 @@ About `close_buttom`:
 - If `close_buttom=True`, a `×` button is injected inside the popup.
 - Clicking that button closes only the alert window.
 - The close button also sends the normal bridge metadata, so access rules still work correctly.
+
+### Styling The Alert Close Button
+
+You can style the injected close button with your own CSS class:
+
+```python
+web_app.system_tray.alert(
+    "view/html/alert.html",
+    window_size=(420, 400),
+    duration_ms=12000,
+    close_buttom=True,
+    close_button_class="alert-close-custom",
+    close_button_use_default_style=False,
+    padding=(24, 132),
+)
+```
+
+In this mode:
+
+- `close_button_class` defines the class name used by the injected button
+- `close_button_use_default_style=False` disables the built-in style
+- your page CSS becomes fully responsible for the visual appearance
+
+Example CSS:
+
+```css
+.alert-close-custom {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 12px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 22px;
+  cursor: pointer;
+}
+```
+
+If you prefer the built-in visual style but still want a custom class for extra tweaks, you can keep:
+
+```python
+close_button_use_default_style=True
+```
+
+Then the default style is injected first, and your CSS class can complement it.
 
 ## Window Events
 

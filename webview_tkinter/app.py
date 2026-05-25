@@ -175,6 +175,8 @@ class SystemTrayController:
         duration_ms: int | None = None,
         close_buttom: bool = False,
         close_button: bool | None = None,
+        close_button_class: str | None = None,
+        close_button_use_default_style: bool = True,
         events=None,
         **window_kwargs,
     ) -> "WebViewWindow":
@@ -187,6 +189,8 @@ class SystemTrayController:
             duration_ms=duration_ms,
             close_buttom=close_buttom,
             close_button=close_button,
+            close_button_class=close_button_class,
+            close_button_use_default_style=close_button_use_default_style,
             events=events,
             **window_kwargs,
         )
@@ -362,59 +366,71 @@ if (document.readyState === "loading") {{
 }}
 """
 
-    def _get_alert_close_button_script(self) -> str:
-        return """
-window.__webviewTkinterInstallAlertCloseButton = () => {
-  if (document.getElementById("__webviewTkinterAlertClose")) {
+    def _get_alert_close_button_script(
+        self,
+        *,
+        close_button_class: str | None = None,
+        close_button_use_default_style: bool = True,
+    ) -> str:
+        class_name = close_button_class or "__webviewTkinterAlertCloseButton"
+        class_name_literal = json.dumps(class_name, ensure_ascii=True)
+        use_default_style = "true" if close_button_use_default_style else "false"
+        return f"""
+window.__webviewTkinterInstallAlertCloseButton = () => {{
+  if (document.getElementById("__webviewTkinterAlertClose")) {{
     return;
-  }
+  }}
 
-  const style = document.createElement("style");
-  style.id = "__webviewTkinterAlertCloseStyle";
-  style.textContent = `
-    .__webviewTkinterAlertCloseButton {
-      position: fixed;
-      top: 10px;
-      right: 10px;
-      width: 32px;
-      height: 32px;
-      border: 0;
-      border-radius: 999px;
-      background: rgba(15, 23, 42, 0.88);
-      color: #e2e8f0;
-      font-size: 18px;
-      line-height: 1;
-      cursor: pointer;
-      z-index: 2147483647;
-      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.26);
-    }
-  `;
-  document.documentElement.appendChild(style);
+  window.__webviewTkinterAlertCloseClass = {class_name_literal};
+
+  if ({use_default_style}) {{
+    const style = document.createElement("style");
+    style.id = "__webviewTkinterAlertCloseStyle";
+    style.textContent = `
+      .${{window.__webviewTkinterAlertCloseClass}} {{
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        width: 32px;
+        height: 32px;
+        border: 0;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.88);
+        color: #e2e8f0;
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+        z-index: 2147483647;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.26);
+      }}
+    `;
+    document.documentElement.appendChild(style);
+  }}
 
   const button = document.createElement("button");
   button.id = "__webviewTkinterAlertClose";
-  button.className = "__webviewTkinterAlertCloseButton";
+  button.className = window.__webviewTkinterAlertCloseClass;
   button.type = "button";
   button.setAttribute("aria-label", "Close alert");
   button.textContent = "×";
-  button.addEventListener("click", () => {
-    if (typeof window.__webview_tkinter_close_alert === "function") {
-      window.__webview_tkinter_close_alert({
-        __webview_tkinter_meta__: {
+  button.addEventListener("click", () => {{
+    if (typeof window.__webview_tkinter_close_alert === "function") {{
+      window.__webview_tkinter_close_alert({{
+        __webview_tkinter_meta__: {{
           href: window.location.href,
           asset: window.__webviewTkinterCurrentAsset
-        }
-      });
-    }
-  });
+        }}
+      }});
+    }}
+  }});
   document.body.appendChild(button);
-};
+}};
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", window.__webviewTkinterInstallAlertCloseButton, { once: true });
-} else {
+if (document.readyState === "loading") {{
+  document.addEventListener("DOMContentLoaded", window.__webviewTkinterInstallAlertCloseButton, {{ once: true }});
+}} else {{
   window.__webviewTkinterInstallAlertCloseButton();
-}
+}}
 """
 
     def _normalize_site(self, site: str) -> str:
@@ -1036,6 +1052,8 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         duration_ms: int | None = None,
         close_buttom: bool = False,
         close_button: bool | None = None,
+        close_button_class: str | None = None,
+        close_button_use_default_style: bool = True,
         events=None,
         **window_kwargs,
     ) -> "WebViewWindow":
@@ -1066,7 +1084,10 @@ window.__webviewTkinterHomeSite = {home_site_literal};
                 )
                 alert_window._install_bridge_script(
                     "alert_close_button",
-                    self._get_alert_close_button_script(),
+                    self._get_alert_close_button_script(
+                        close_button_class=close_button_class,
+                        close_button_use_default_style=close_button_use_default_style,
+                    ),
                 )
 
         alert_window = self._create_child_window(

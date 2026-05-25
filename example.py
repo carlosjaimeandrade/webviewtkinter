@@ -14,8 +14,21 @@ def open_top_level(params):
     return f"Top level opened with params: {params}"
 
 
+def tray_about(window):
+    print("Tray action", window.title)
+
 web_app = WebViewWindow("view/html/index.html", window_size=(1280, 720), title="Bridge demo", events=events)
 web_app.debug_mode(True)
+
+web_app.system_tray(
+    True,
+    tooltip="Bridge demo",
+    close_to_tray=True,
+    menu_items=[
+        {"label": "About", "callback": tray_about},
+    ],
+)
+
 web_app.open_access_expose(
     ["view/html/index.html", "view/html/tela1.html", "view/html/tela2.html"]
 )

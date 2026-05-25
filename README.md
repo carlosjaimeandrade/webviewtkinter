@@ -136,6 +136,7 @@ open_webview("https://example.com", window_size=(1024, 768))
 - `evaluate_js(script)`: executes JavaScript inside the page.
 - `unsafe_evaluate_js(script)`: executes JavaScript without the extra `receive` safety guard.
 - `debug_mode(enabled=True)`: enables or disables browser debug behavior.
+- `system_tray(enabled=True, **kwargs)`: enables system tray support for the window.
 - `close()`: closes the window.
 - `set_title(title)`: changes the window title.
 - `set_window_size(width, height)`: changes the window size.
@@ -146,7 +147,66 @@ open_webview("https://example.com", window_size=(1024, 768))
 - `open_access_site(list)`: `snake_case` version of `openAccessSite(...)`.
 - `top_level(site=None, window_size=None, title=None, **kwargs)`: `snake_case` version of `topLevel(...)`.
 - `debugMode(enabled=True)`: `camelCase` alias for `debug_mode(...)`.
+- `SystemTray(enabled=True, **kwargs)`: `camelCase` alias for `system_tray(...)`.
 - `topLevel(site=None, window_size=None, title=None, **kwargs)`: opens a child `Toplevel` web window.
+
+## System Tray
+
+You can enable system tray support like this:
+
+```python
+web_app = WebViewWindow(
+    "view/html/index.html",
+    window_size=(1280, 720),
+    title="Bridge demo",
+)
+
+web_app.system_tray(
+    True,
+    tooltip="Bridge demo",
+    close_to_tray=True,
+)
+
+web_app.run()
+```
+
+What it does:
+
+- Creates a tray icon for the window.
+- Adds default tray actions such as `Restore` and `Quit`.
+- If `close_to_tray=True`, clicking the window close button hides the window and sends it to the tray instead of exiting the app.
+
+Main parameters:
+
+- `enabled`: enables or disables tray support.
+- `icon_path`: optional icon file for the tray icon.
+- `tooltip`: text shown in the tray icon tooltip.
+- `close_to_tray`: if `True`, clicking the close button sends the window to the tray instead of closing it.
+- `allow_restore`: shows the `Restore` action in the tray menu.
+- `allow_quit`: shows the `Quit` action in the tray menu.
+- `menu_items`: optional custom tray menu items.
+
+Example with a custom menu item:
+
+```python
+def about(window):
+    print("Tray action from:", window.title)
+
+web_app.system_tray(
+    True,
+    tooltip="Bridge demo",
+    close_to_tray=True,
+    menu_items=[
+        {"label": "About", "callback": about},
+    ],
+)
+```
+
+You can also use:
+
+```python
+web_app.SystemTray(True, tooltip="Bridge demo", close_to_tray=True)
+```
 
 ## Window Events
 
@@ -213,6 +273,8 @@ Available event names:
 - `hidden`
 - `moved`
 - `resized`
+- `tray_entered`
+- `tray_restored`
 
 ## Debug Mode
 
@@ -432,3 +494,4 @@ HTML:
 - It requires Microsoft Edge WebView2 Runtime to be installed.
 - Local `.html` files are supported as long as the path exists.
 - For bundled frontend deploys, generate `frontend.py` with `py deploy_content.py` after changing frontend files.
+- System tray support uses `pystray` and `Pillow`, which are already listed in `requirements.txt`.

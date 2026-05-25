@@ -10,8 +10,17 @@ from pathlib import Path
 from typing import Iterable
 from urllib.parse import unquote, urlparse
 
+try:
+    import pystray
+except ImportError:
+    pystray = None
 from tkwebview import TkWebview
 from tkwebview.core import Webview
+try:
+    from PIL import Image, ImageDraw
+except ImportError:
+    Image = None
+    ImageDraw = None
 
 
 class ConfigurableTkWebview(tk.Frame):
@@ -191,6 +200,16 @@ class WebViewWindow:
         self._last_window_state: str | None = None
         self._last_window_geometry: tuple[int, int, int, int] | None = None
         self._close_event_emitted = False
+        self._system_tray_enabled = False
+        self._system_tray_close_to_tray = True
+        self._system_tray_icon_path: str | None = None
+        self._system_tray_tooltip: str | None = None
+        self._system_tray_allow_quit = True
+        self._system_tray_allow_restore = True
+        self._system_tray_menu_items: list[dict[str, object]] = []
+        self._tray_icon: pystray.Icon | None = None
+        self._tray_thread: threading.Thread | None = None
+        self._is_in_system_tray = False
         self.expose_function = FunctionBridge(self)
 
         app._bind(self)
@@ -334,6 +353,37 @@ if (document.readyState === "loading") {{
         if not callable(events):
             raise TypeError("events must be a callable function or method.")
         return events
+
+    def _normalize_system_tray_menu_items(self, menu_items) -> list[dict[str, object]]:
+        if menu_items is None:
+            return []
+        if not isinstance(menu_items, (list, tuple)):
+            raise TypeError("menu_items must be a list or tuple of dictionaries.")
+
+        normalized_items: list[dict[str, object]] = []
+        for item in menu_items:
+            if not isinstance(item, dict):
+                raise TypeError("Each tray menu item must be a dictionary.")
+
+            label = item.get("label")
+            callback = item.get("callback")
+            default = bool(item.get("default", False))
+            enabled = bool(item.get("enabled", True))
+
+            if not isinstance(label, str) or not label.strip():
+                raise ValueError("Each tray menu item needs a non-empty 'label'.")
+            if not callable(callback):
+                raise TypeError("Each tray menu item needs a callable 'callback'.")
+
+            normalized_items.append(
+                {
+                    "label": label.strip(),
+                    "callback": callback,
+                    "default": default,
+                    "enabled": enabled,
+                }
+            )
+        return normalized_items
 
     def _normalize_lock_target(self, target: str) -> str:
         if not isinstance(target, str) or not target.strip():
@@ -927,6 +977,9 @@ window.__webviewTkinterHomeSite = {home_site_literal};
 
     def _handle_close_request(self) -> None:
         self._emit_window_event("close_requested")
+        if self._system_tray_enabled and self._system_tray_close_to_tray:
+            self.minimize_to_system_tray()
+            return
         self.close()
 
     def debug_mode(self, enabled: bool = True) -> None:
@@ -946,6 +999,188 @@ window.__webviewTkinterHomeSite = {home_site_literal};
 
     def debugMode(self, enabled: bool = True) -> None:
         self.debug_mode(enabled)
+
+    def _create_default_tray_image(self) -> Image.Image:
+        if Image is None or ImageDraw is None:
+            raise RuntimeError(
+                "System tray support requires Pillow. Install dependencies from requirements.txt."
+            )
+        image = Image.new("RGBA", (64, 64), (15, 23, 42, 255))
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((8, 8, 56, 56), radius=12, fill=(37, 99, 235, 255))
+        draw.rectangle((20, 18, 44, 24), fill=(255, 255, 255, 255))
+        draw.rectangle((20, 28, 44, 34), fill=(255, 255, 255, 220))
+        draw.rectangle((20, 38, 36, 44), fill=(255, 255, 255, 180))
+        return image
+
+    def _load_tray_image(self) -> Image.Image:
+        if self._system_tray_icon_path is not None:
+            return Image.open(self._system_tray_icon_path)
+        if self.icon_path is not None:
+            return Image.open(self.icon_path)
+        return self._create_default_tray_image()
+
+    def _run_on_ui_thread_async(self, callback, *args) -> None:
+        if self.root is None:
+            callback(*args)
+            return
+        self.root.after(0, lambda: callback(*args))
+
+    def _restore_from_tray(self, *_args) -> None:
+        self._run_on_ui_thread_async(self.restore_from_system_tray)
+
+    def _quit_from_tray(self, *_args) -> None:
+        self._run_on_ui_thread_async(self.close)
+
+    def _make_tray_menu(self):
+        if pystray is None:
+            raise RuntimeError(
+                "System tray support requires pystray. Install dependencies from requirements.txt."
+            )
+        menu_entries = []
+
+        if self._system_tray_allow_restore:
+            menu_entries.append(
+                pystray.MenuItem("Restore", self._restore_from_tray, default=True)
+            )
+
+        def make_menu_callback(current_callback):
+            def wrapped(_icon, _item):
+                self._run_on_ui_thread_async(current_callback, self)
+            return wrapped
+
+        for item in self._system_tray_menu_items:
+            menu_entries.append(
+                pystray.MenuItem(
+                    str(item["label"]),
+                    make_menu_callback(item["callback"]),
+                    default=bool(item["default"]),
+                    enabled=lambda _item, value=bool(item["enabled"]): value,
+                )
+            )
+
+        if self._system_tray_allow_quit:
+            menu_entries.append(pystray.MenuItem("Quit", self._quit_from_tray))
+
+        return pystray.Menu(*menu_entries)
+
+    def _ensure_tray_icon(self) -> None:
+        if not self._system_tray_enabled or self._tray_icon is not None:
+            return
+        if pystray is None:
+            raise RuntimeError(
+                "System tray support requires pystray. Install dependencies from requirements.txt."
+            )
+
+        icon_image = self._load_tray_image()
+        tooltip = self._system_tray_tooltip or self.title
+        self._tray_icon = pystray.Icon(
+            name=f"webview_tkinter_{id(self)}",
+            title=tooltip,
+            icon=icon_image,
+            menu=self._make_tray_menu(),
+        )
+
+    def _start_tray_icon(self) -> None:
+        self._ensure_tray_icon()
+        if self._tray_icon is None:
+            return
+        if self._tray_thread is not None and self._tray_thread.is_alive():
+            return
+
+        def runner() -> None:
+            self._tray_icon.run()
+
+        self._tray_thread = threading.Thread(target=runner, daemon=True)
+        self._tray_thread.start()
+
+    def _stop_tray_icon(self) -> None:
+        if self._tray_icon is not None:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
+        self._tray_icon = None
+        self._tray_thread = None
+
+    def minimize_to_system_tray(self) -> None:
+        if not self._system_tray_enabled or self.root is None:
+            return
+
+        self._start_tray_icon()
+        self.root.withdraw()
+        self._is_in_system_tray = True
+        self._emit_window_event("tray_entered")
+
+    def restore_from_system_tray(self) -> None:
+        if self.root is None:
+            return
+
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+        self._is_in_system_tray = False
+        self._emit_window_event("tray_restored")
+
+    def system_tray(
+        self,
+        enabled: bool = True,
+        *,
+        icon_path: str | None = None,
+        tooltip: str | None = None,
+        close_to_tray: bool = True,
+        allow_restore: bool = True,
+        allow_quit: bool = True,
+        menu_items: list[dict[str, object]] | tuple[dict[str, object], ...] | None = None,
+    ) -> None:
+        if not isinstance(enabled, bool):
+            raise TypeError("system_tray() expects a boolean 'enabled' value.")
+        if not isinstance(close_to_tray, bool):
+            raise TypeError("close_to_tray must be a boolean value.")
+        if not isinstance(allow_restore, bool):
+            raise TypeError("allow_restore must be a boolean value.")
+        if not isinstance(allow_quit, bool):
+            raise TypeError("allow_quit must be a boolean value.")
+        if enabled and (pystray is None or Image is None or ImageDraw is None):
+            raise RuntimeError(
+                "System tray support requires pystray and Pillow. Install dependencies from requirements.txt."
+            )
+
+        self._system_tray_enabled = enabled
+        self._system_tray_close_to_tray = close_to_tray
+        self._system_tray_allow_restore = allow_restore
+        self._system_tray_allow_quit = allow_quit
+        self._system_tray_tooltip = tooltip or self.title
+        self._system_tray_icon_path = self._normalize_optional_path(icon_path) if icon_path else None
+        self._system_tray_menu_items = self._normalize_system_tray_menu_items(menu_items)
+
+        if not enabled:
+            self._is_in_system_tray = False
+            self._stop_tray_icon()
+            return
+
+        self._ensure_tray_icon()
+
+    def SystemTray(
+        self,
+        enabled: bool = True,
+        *,
+        icon_path: str | None = None,
+        tooltip: str | None = None,
+        close_to_tray: bool = True,
+        allow_restore: bool = True,
+        allow_quit: bool = True,
+        menu_items: list[dict[str, object]] | tuple[dict[str, object], ...] | None = None,
+    ) -> None:
+        self.system_tray(
+            enabled=enabled,
+            icon_path=icon_path,
+            tooltip=tooltip,
+            close_to_tray=close_to_tray,
+            allow_restore=allow_restore,
+            allow_quit=allow_quit,
+            menu_items=menu_items,
+        )
 
     def create_window(self) -> tk.Tk | tk.Toplevel:
         if self._is_top_level:
@@ -1005,6 +1240,13 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         child_window._open_access_site_rules = set(self._open_access_site_rules)
         child_window._exposed_functions = dict(self._exposed_functions)
         child_window._bridge_scripts = dict(self._bridge_scripts)
+        child_window._system_tray_enabled = self._system_tray_enabled
+        child_window._system_tray_close_to_tray = self._system_tray_close_to_tray
+        child_window._system_tray_icon_path = self._system_tray_icon_path
+        child_window._system_tray_tooltip = self._system_tray_tooltip
+        child_window._system_tray_allow_quit = self._system_tray_allow_quit
+        child_window._system_tray_allow_restore = self._system_tray_allow_restore
+        child_window._system_tray_menu_items = list(self._system_tray_menu_items)
         child_window.run()
         self._child_windows.append(child_window)
         return child_window
@@ -1217,6 +1459,8 @@ window.__webviewTkinterHomeSite = {home_site_literal};
 
         self._close_event_emitted = True
         self._emit_window_event("closing")
+        self._stop_tray_icon()
+        self._is_in_system_tray = False
 
         for child_window in list(self._child_windows):
             child_window.close()

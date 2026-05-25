@@ -139,6 +139,68 @@ class FunctionBridge:
         self.window._emit_to_frontend(name, *args)
 
 
+class SystemTrayController:
+    def __init__(self, window: "WebViewWindow") -> None:
+        self.window = window
+
+    def __call__(
+        self,
+        enabled: bool = True,
+        *,
+        icon_path: str | None = None,
+        tooltip: str | None = None,
+        close_to_tray: bool = True,
+        allow_restore: bool = True,
+        allow_quit: bool = True,
+        menu_items: list[dict[str, object]] | tuple[dict[str, object], ...] | None = None,
+    ) -> None:
+        self.window._configure_system_tray(
+            enabled=enabled,
+            icon_path=icon_path,
+            tooltip=tooltip,
+            close_to_tray=close_to_tray,
+            allow_restore=allow_restore,
+            allow_quit=allow_quit,
+            menu_items=menu_items,
+        )
+
+    def alert(
+        self,
+        site: str,
+        *,
+        window_size: tuple[int, int] | list[int] | None = (420, 240),
+        title: str | None = None,
+        padding: tuple[int, int] | list[int] | None = (24, 56),
+        margin: tuple[int, int] | list[int] | None = (24, 56),
+        duration_ms: int | None = None,
+        close_buttom: bool = False,
+        close_button: bool | None = None,
+        events=None,
+        **window_kwargs,
+    ) -> "WebViewWindow":
+        return self.window._show_system_tray_alert(
+            site=site,
+            window_size=window_size,
+            title=title,
+            padding=padding,
+            margin=margin,
+            duration_ms=duration_ms,
+            close_buttom=close_buttom,
+            close_button=close_button,
+            events=events,
+            **window_kwargs,
+        )
+
+    def restore(self) -> None:
+        self.window.restore_from_system_tray()
+
+    def minimize(self) -> None:
+        self.window.minimize_to_system_tray()
+
+    def close(self) -> None:
+        self.window.close()
+
+
 class WebViewWindow:
     def __init__(
         self,
@@ -211,6 +273,8 @@ class WebViewWindow:
         self._tray_thread: threading.Thread | None = None
         self._is_in_system_tray = False
         self.expose_function = FunctionBridge(self)
+        self.system_tray = SystemTrayController(self)
+        self.SystemTray = self.system_tray
 
         app._bind(self)
         self._install_bridge_script("bridge_core", self._get_bridge_core_script())
@@ -296,6 +360,61 @@ if (document.readyState === "loading") {{
 }} else {{
   window.__webviewTkinterApplyDebugMode();
 }}
+"""
+
+    def _get_alert_close_button_script(self) -> str:
+        return """
+window.__webviewTkinterInstallAlertCloseButton = () => {
+  if (document.getElementById("__webviewTkinterAlertClose")) {
+    return;
+  }
+
+  const style = document.createElement("style");
+  style.id = "__webviewTkinterAlertCloseStyle";
+  style.textContent = `
+    .__webviewTkinterAlertCloseButton {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      width: 32px;
+      height: 32px;
+      border: 0;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.88);
+      color: #e2e8f0;
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+      z-index: 2147483647;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.26);
+    }
+  `;
+  document.documentElement.appendChild(style);
+
+  const button = document.createElement("button");
+  button.id = "__webviewTkinterAlertClose";
+  button.className = "__webviewTkinterAlertCloseButton";
+  button.type = "button";
+  button.setAttribute("aria-label", "Close alert");
+  button.textContent = "×";
+  button.addEventListener("click", () => {
+    if (typeof window.__webview_tkinter_close_alert === "function") {
+      window.__webview_tkinter_close_alert({
+        __webview_tkinter_meta__: {
+          href: window.location.href,
+          asset: window.__webviewTkinterCurrentAsset
+        }
+      });
+    }
+  });
+  document.body.appendChild(button);
+};
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", window.__webviewTkinterInstallAlertCloseButton, { once: true });
+} else {
+  window.__webviewTkinterInstallAlertCloseButton();
+}
 """
 
     def _normalize_site(self, site: str) -> str:
@@ -856,6 +975,122 @@ window.__webviewTkinterHomeSite = {home_site_literal};
             "_debug_mode_enabled": self._debug_mode_enabled,
         }
 
+    def _create_child_window(
+        self,
+        *,
+        site: str,
+        window_size: tuple[int, int] | list[int] | None = None,
+        title: str | None = None,
+        additional_allowed_sources: list[str] | tuple[str, ...] | set[str] | None = None,
+        configure_window=None,
+        **window_kwargs,
+    ) -> "WebViewWindow":
+        if self.root is None:
+            self.create_window()
+
+        child_kwargs = self._build_init_kwargs()
+        child_kwargs.update(window_kwargs)
+
+        child_kwargs["site"] = site
+        if window_size is not None:
+            child_kwargs["window_size"] = window_size
+        if title is not None:
+            child_kwargs["title"] = title
+
+        child_kwargs["_parent_root"] = self.root
+        child_kwargs["_is_top_level"] = True
+
+        child_window = WebViewWindow(**child_kwargs)
+        child_window._open_access_expose_rules = set(self._open_access_expose_rules)
+        child_window._open_access_site_rules = set(self._open_access_site_rules)
+        child_window._exposed_functions = dict(self._exposed_functions)
+        child_window._bridge_scripts = dict(self._bridge_scripts)
+        child_window._system_tray_enabled = self._system_tray_enabled
+        child_window._system_tray_close_to_tray = self._system_tray_close_to_tray
+        child_window._system_tray_icon_path = self._system_tray_icon_path
+        child_window._system_tray_tooltip = self._system_tray_tooltip
+        child_window._system_tray_allow_quit = self._system_tray_allow_quit
+        child_window._system_tray_allow_restore = self._system_tray_allow_restore
+        child_window._system_tray_menu_items = list(self._system_tray_menu_items)
+
+        if additional_allowed_sources:
+            extra_sources = self._normalize_access_sources(additional_allowed_sources)
+            child_window._open_access_expose_rules.update(extra_sources)
+            child_window._open_access_site_rules.update(extra_sources)
+
+        if configure_window is not None:
+            configure_window(child_window)
+
+        child_window.run()
+        self._child_windows.append(child_window)
+        return child_window
+
+    def _show_system_tray_alert(
+        self,
+        *,
+        site: str,
+        window_size: tuple[int, int] | list[int] | None = (420, 240),
+        title: str | None = None,
+        padding: tuple[int, int] | list[int] | None = (24, 56),
+        margin: tuple[int, int] | list[int] | None = (24, 56),
+        duration_ms: int | None = None,
+        close_buttom: bool = False,
+        close_button: bool | None = None,
+        events=None,
+        **window_kwargs,
+    ) -> "WebViewWindow":
+        if not self._system_tray_enabled:
+            raise RuntimeError("System tray alert requires system tray support to be enabled.")
+        if self.root is None:
+            raise RuntimeError("The main window must be created before showing a tray alert.")
+
+        alert_size = self._normalize_size(window_size)
+        alert_padding_source = padding if padding is not None else margin
+        alert_padding = self._normalize_point(alert_padding_source) if alert_padding_source is not None else (24, 56)
+        if alert_padding is None:
+            alert_padding = (24, 56)
+        show_close_button = close_buttom if close_button is None else close_button
+
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        margin_x, margin_y = alert_padding
+        width, height = alert_size
+        pos_x = max(screen_width - width - margin_x, 0)
+        pos_y = max(screen_height - height - margin_y, 0)
+
+        def configure_alert_window(alert_window: "WebViewWindow") -> None:
+            if show_close_button:
+                alert_window.expose_function.receive(
+                    "__webview_tkinter_close_alert",
+                    lambda: alert_window.close(),
+                )
+                alert_window._install_bridge_script(
+                    "alert_close_button",
+                    self._get_alert_close_button_script(),
+                )
+
+        alert_window = self._create_child_window(
+            site=site,
+            window_size=alert_size,
+            title=title or self.title,
+            additional_allowed_sources=[site],
+            configure_window=configure_alert_window,
+            events=events,
+            position=(pos_x, pos_y),
+            topmost=True,
+            resizable=(False, False),
+            overrideredirect=window_kwargs.pop("overrideredirect", True),
+            **window_kwargs,
+        )
+
+        if duration_ms is not None:
+            if not isinstance(duration_ms, int) or duration_ms <= 0:
+                raise ValueError("duration_ms must be a positive integer.")
+            if alert_window.root is not None:
+                alert_window.root.after(duration_ms, alert_window.close)
+
+        return alert_window
+
     def _get_window_state(self) -> str | None:
         if self.root is None:
             return None
@@ -1122,7 +1357,7 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         self._is_in_system_tray = False
         self._emit_window_event("tray_restored")
 
-    def system_tray(
+    def _configure_system_tray(
         self,
         enabled: bool = True,
         *,
@@ -1161,27 +1396,6 @@ window.__webviewTkinterHomeSite = {home_site_literal};
 
         self._ensure_tray_icon()
 
-    def SystemTray(
-        self,
-        enabled: bool = True,
-        *,
-        icon_path: str | None = None,
-        tooltip: str | None = None,
-        close_to_tray: bool = True,
-        allow_restore: bool = True,
-        allow_quit: bool = True,
-        menu_items: list[dict[str, object]] | tuple[dict[str, object], ...] | None = None,
-    ) -> None:
-        self.system_tray(
-            enabled=enabled,
-            icon_path=icon_path,
-            tooltip=tooltip,
-            close_to_tray=close_to_tray,
-            allow_restore=allow_restore,
-            allow_quit=allow_quit,
-            menu_items=menu_items,
-        )
-
     def create_window(self) -> tk.Tk | tk.Toplevel:
         if self._is_top_level:
             if self._parent_root is None:
@@ -1219,37 +1433,12 @@ window.__webviewTkinterHomeSite = {home_site_literal};
         title: str | None = None,
         **window_kwargs,
     ) -> "WebViewWindow":
-        if self.root is None:
-            self.create_window()
-
-        child_kwargs = self._build_init_kwargs()
-        child_kwargs.update(window_kwargs)
-
-        if site is not None:
-            child_kwargs["site"] = site
-        if window_size is not None:
-            child_kwargs["window_size"] = window_size
-        if title is not None:
-            child_kwargs["title"] = title
-
-        child_kwargs["_parent_root"] = self.root
-        child_kwargs["_is_top_level"] = True
-
-        child_window = WebViewWindow(**child_kwargs)
-        child_window._open_access_expose_rules = set(self._open_access_expose_rules)
-        child_window._open_access_site_rules = set(self._open_access_site_rules)
-        child_window._exposed_functions = dict(self._exposed_functions)
-        child_window._bridge_scripts = dict(self._bridge_scripts)
-        child_window._system_tray_enabled = self._system_tray_enabled
-        child_window._system_tray_close_to_tray = self._system_tray_close_to_tray
-        child_window._system_tray_icon_path = self._system_tray_icon_path
-        child_window._system_tray_tooltip = self._system_tray_tooltip
-        child_window._system_tray_allow_quit = self._system_tray_allow_quit
-        child_window._system_tray_allow_restore = self._system_tray_allow_restore
-        child_window._system_tray_menu_items = list(self._system_tray_menu_items)
-        child_window.run()
-        self._child_windows.append(child_window)
-        return child_window
+        return self._create_child_window(
+            site=site or self.site,
+            window_size=window_size,
+            title=title,
+            **window_kwargs,
+        )
 
     def topLevel(
         self,

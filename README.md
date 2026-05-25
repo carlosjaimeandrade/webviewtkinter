@@ -137,6 +137,7 @@ open_webview("https://example.com", window_size=(1024, 768))
 - `unsafe_evaluate_js(script)`: executes JavaScript without the extra `receive` safety guard.
 - `debug_mode(enabled=True)`: enables or disables browser debug behavior.
 - `system_tray(enabled=True, **kwargs)`: enables system tray support for the window.
+- `system_tray.alert(site, **kwargs)`: opens a tray-style popup window using a normal `WebViewWindow` with bridge support.
 - `close()`: closes the window.
 - `set_title(title)`: changes the window title.
 - `set_window_size(width, height)`: changes the window size.
@@ -186,6 +187,13 @@ Main parameters:
 - `allow_quit`: shows the `Quit` action in the tray menu.
 - `menu_items`: optional custom tray menu items.
 
+About `close_to_tray`:
+
+- If `close_to_tray=True`, clicking the window `X` does not destroy the app window.
+- Instead, the window is hidden with `withdraw()` and stays alive in the system tray.
+- You can then restore it from the tray menu.
+- If `close_to_tray=False`, clicking the `X` closes the window normally.
+
 Example with a custom menu item:
 
 ```python
@@ -207,6 +215,78 @@ You can also use:
 ```python
 web_app.SystemTray(True, tooltip="Bridge demo", close_to_tray=True)
 ```
+
+### Tray Alerts
+
+You can open a popup near the system clock with:
+
+```python
+web_app.system_tray.alert(
+    "view/html/alert.html",
+    window_size=(420, 240),
+)
+```
+
+This alert is not a fake HTML layer. It is a real child `WebViewWindow`, so it supports:
+
+- `window.send.*`
+- `window.receive.*`
+- `web_app.expose_function.receive(...)`
+- `web_app.expose_function.send(...)`
+- bundled pages from `frontend.py`
+
+Example:
+
+```python
+def events(event):
+    print(event)
+    if event["name"] == "close_requested":
+        web_app.system_tray.alert(
+            "view/html/alert.html",
+            window_size=(420, 240),
+            duration_ms=12000,
+            close_buttom=True,
+            padding=(24, 72),
+        )
+```
+
+Main alert parameters:
+
+- `site`: page to open in the alert popup, such as `view/html/alert.html`.
+- `window_size`: popup size.
+- `title`: optional popup title.
+- `duration_ms`: auto-close time in milliseconds. If omitted, the popup stays open until closed.
+- `padding`: controls the distance from the bottom-right corner of the screen.
+- `close_buttom`: if `True`, shows a visual close button inside the popup.
+- `close_button`: alternative spelling for the same behavior.
+- `events`: optional callback specific to the alert window.
+
+About `padding`:
+
+- `padding=(x, y)`
+- `x` controls how far the alert stays from the right edge.
+- `y` controls how far the alert stays from the bottom edge.
+- Higher `x` moves it more to the left.
+- Higher `y` moves it more upward.
+
+Example:
+
+```python
+web_app.system_tray.alert(
+    "view/html/alert.html",
+    window_size=(420, 240),
+    padding=(40, 120),
+)
+```
+
+This makes the popup appear farther from the taskbar and more to the left.
+
+About `close_buttom`:
+
+- This parameter keeps the current API exactly as implemented in the project.
+- If `close_buttom=True`, a `×` button is injected inside the popup.
+- Clicking that button closes only the alert window.
+- The close button also sends the normal bridge metadata, so access rules still work correctly.
 
 ## Window Events
 
@@ -275,6 +355,51 @@ Available event names:
 - `resized`
 - `tray_entered`
 - `tray_restored`
+
+### What Each Event Means
+
+- `created`: the window has been created and its Tk/WebView structure is ready.
+- `close_requested`: the user asked to close the window, usually by clicking the `X`.
+- `closing`: the window is in the process of shutting down.
+- `closed`: the window has already been destroyed.
+- `focus_in`: the window gained focus.
+- `focus_out`: the window lost focus.
+- `state_changed`: the Tk window state changed. This is the generic state transition event.
+- `minimized`: the window entered the minimized/iconic state.
+- `maximized`: the window entered the maximized/zoomed state.
+- `restored`: the window returned to normal after being minimized or maximized.
+- `hidden`: the window became hidden or withdrawn.
+- `moved`: the window position changed on screen.
+- `resized`: the window size changed.
+- `tray_entered`: the window was moved to the system tray.
+- `tray_restored`: the window was restored from the system tray.
+
+### Notes About Event Flow
+
+- `close_requested` happens before `closing`.
+- If `system_tray(..., close_to_tray=True)` is active, `close_requested` may be followed by `tray_entered` instead of `closing`.
+- `state_changed` is the generic event, while `minimized`, `maximized`, and `restored` are the more specific interpretations of that state transition.
+- `moved` and `resized` can fire many times while the user is dragging or resizing the window.
+- `focus_in` and `focus_out` are useful for knowing which window is currently active.
+
+### Example Event Handler
+
+```python
+def events(event):
+    print("event:", event["name"])
+
+    if event["name"] == "close_requested":
+        web_app.system_tray.alert(
+            "view/html/alert.html",
+            window_size=(420, 240),
+            duration_ms=12000,
+            close_buttom=True,
+            padding=(24, 72),
+        )
+
+    if event["name"] == "tray_restored":
+        print("The main window came back from the tray.")
+```
 
 ## Debug Mode
 

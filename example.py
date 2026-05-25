@@ -8,6 +8,14 @@ def receive_from_frontend(params):
 
 def events(event):
     print(event)
+    if event["name"] == "close_requested":
+        web_app.system_tray.alert(
+            "view/html/alert.html",
+            window_size=(420, 400),
+            duration_ms=12000,
+            close_buttom=True,
+            padding=(24, 132),
+        )
 
 def open_top_level(params):
     web_app.top_level("view/html/tela1.html", title="Screen 1", window_size=(800, 600), events=events)
@@ -29,11 +37,12 @@ web_app.system_tray(
     ],
 )
 
+
 web_app.open_access_expose(
-    ["view/html/index.html", "view/html/tela1.html", "view/html/tela2.html"]
+    ["view/html/index.html", "view/html/tela1.html", "view/html/tela2.html", "view/html/alert.html"]
 )
 web_app.open_access_site(
-    ["view/html/index.html", "view/html/tela1.html", "view/html/tela2.html"]
+    ["view/html/index.html", "view/html/tela1.html", "view/html/tela2.html", "view/html/alert.html"]
 )
 web_app.expose_function.receive("ping_python", receive_from_frontend)
 web_app.expose_function.receive("top_level", open_top_level)

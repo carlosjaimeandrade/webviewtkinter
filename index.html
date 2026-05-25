@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bridge Home</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f4f7fb;
+      color: #1f2937;
+    }
+
+    nav {
+      display: flex;
+      gap: 12px;
+      padding: 16px 24px;
+      background: #0f172a;
+    }
+
+    nav a {
+      color: #fff;
+      text-decoration: none;
+      padding: 10px 14px;
+      background: #2563eb;
+      border-radius: 8px;
+    }
+
+    main {
+      padding: 32px 24px;
+    }
+
+    button {
+      padding: 12px 18px;
+      border: 0;
+      background: #2563eb;
+      color: #fff;
+      cursor: pointer;
+      border-radius: 8px;
+      margin-right: 12px;
+    }
+
+    #result {
+      margin-top: 20px;
+      padding: 16px;
+      background: #fff;
+      border-radius: 10px;
+      border: 1px solid #dbe4f0;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="index.html">Home</a>
+    <a href="tela1.html">Screen 1</a>
+    <a href="tela2.html">Screen 2</a>
+  </nav>
+
+  <main>
+    <h1>Send/Receive Bridge</h1>
+    <p>`window.send.*` sends data to Python. `window.receive.*` registers a callback for data sent from Python.</p>
+    <button onclick="callPython()">Send to Python</button>
+    <div id="result">Waiting for a call...</div>
+  </main>
+
+  <script>
+    window.receive.ping_python((params) => {
+      document.getElementById("result").innerText =
+        "Callback from Python:\n" + JSON.stringify(params, null, 2);
+    });
+
+    async function callPython() {
+      const result = await window.send.ping_python("index.html", "home", 1);
+      document.getElementById("result").innerText =
+        "Direct return:\n" + result;
+    }
+  </script>
+</body>
+</html>

@@ -53,7 +53,7 @@ class FunctionBridge:
         callback,
         *,
         run_on_ui_thread: bool = True,
-        allow_unsafe_js: bool = False,
+        allow_unsafe_js: bool = True,
     ) -> None:
         self.window._register_receive_function(
             name,
@@ -87,6 +87,8 @@ class WebViewWindow:
         overrideredirect: bool = False,
         window_options: dict[str, object] | None = None,
         attributes: dict[str, object] | None = None,
+        _parent_root: tk.Tk | tk.Toplevel | None = None,
+        _is_toplevel: bool = False,
     ) -> None:
         self.site = self._normalize_site(site)
         self.window_size = self._normalize_size(window_size)
@@ -105,8 +107,11 @@ class WebViewWindow:
         self.center = center
         self.window_options = dict(window_options or {})
         self.attributes = dict(attributes or {})
-        self.root: tk.Tk | None = None
+        self.root: tk.Tk | tk.Toplevel | None = None
         self.browser: TkWebview | None = None
+        self._parent_root = _parent_root
+        self._is_toplevel = _is_toplevel
+        self._child_windows: list["WebViewWindow"] = []
         self._icon_image: tk.PhotoImage | None = None
         self._home_site = self.site
         self._bridge_scripts: dict[str, str] = {}
@@ -505,8 +510,34 @@ window.location.replace = (value) => {{
         if self.window_options:
             self.root.configure(**self.window_options)
 
-    def create_window(self) -> tk.Tk:
-        self.root = tk.Tk()
+    def _build_init_kwargs(self) -> dict[str, object]:
+        return {
+            "site": self.site,
+            "window_size": self.window_size,
+            "title": self.title,
+            "min_size": self.min_size,
+            "max_size": self.max_size,
+            "position": self.position,
+            "center": self.center,
+            "resizable": self.resizable,
+            "fullscreen": self.fullscreen,
+            "topmost": self.topmost,
+            "transparent_color": self.transparent_color,
+            "alpha": self.alpha,
+            "background": self.background,
+            "icon_path": self.icon_path,
+            "overrideredirect": self.overrideredirect_enabled,
+            "window_options": dict(self.window_options),
+            "attributes": dict(self.attributes),
+        }
+
+    def create_window(self) -> tk.Tk | tk.Toplevel:
+        if self._is_toplevel:
+            if self._parent_root is None:
+                raise RuntimeError("Toplevel windows require an existing parent window.")
+            self.root = tk.Toplevel(self._parent_root)
+        else:
+            self.root = tk.Tk()
         self._apply_window_settings()
 
         try:
@@ -525,6 +556,38 @@ window.location.replace = (value) => {{
 
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         return self.root
+
+    def topLevel(
+        self,
+        site: str | None = None,
+        window_size: tuple[int, int] | list[int] | None = None,
+        title: str | None = None,
+        **window_kwargs,
+    ) -> "WebViewWindow":
+        if self.root is None:
+            self.create_window()
+
+        child_kwargs = self._build_init_kwargs()
+        child_kwargs.update(window_kwargs)
+
+        if site is not None:
+            child_kwargs["site"] = site
+        if window_size is not None:
+            child_kwargs["window_size"] = window_size
+        if title is not None:
+            child_kwargs["title"] = title
+
+        child_kwargs["_parent_root"] = self.root
+        child_kwargs["_is_toplevel"] = True
+
+        child_window = WebViewWindow(**child_kwargs)
+        child_window._open_access_expose_rules = set(self._open_access_expose_rules)
+        child_window._open_access_site_rules = set(self._open_access_site_rules)
+        child_window._exposed_functions = dict(self._exposed_functions)
+        child_window._bridge_scripts = dict(self._bridge_scripts)
+        child_window.run()
+        self._child_windows.append(child_window)
+        return child_window
 
     def _register_receive_function(
         self,
@@ -700,6 +763,10 @@ window.location.replace = (value) => {{
             self.browser.eval(script)
 
     def close(self) -> None:
+        for child_window in list(self._child_windows):
+            child_window.close()
+        self._child_windows.clear()
+
         if self.browser is not None:
             self.browser.destroy_webview()
             self.browser = None
@@ -712,7 +779,7 @@ window.location.replace = (value) => {{
         if self.root is None:
             self.create_window()
 
-        if self.root is not None:
+        if self.root is not None and not self._is_toplevel:
             self.root.mainloop()
 
 

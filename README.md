@@ -115,6 +115,7 @@ open_webview("https://example.com", window_size=(1024, 768))
 - `set_position(x, y)`: moves the window.
 - `set_fullscreen(enabled)`: enables/disables fullscreen.
 - `set_topmost(enabled)`: enables/disables topmost mode.
+- `topLevel(site=None, window_size=None, title=None, **kwargs)`: opens a child `Toplevel` web window.
 
 ## Full Window Example
 
@@ -132,6 +133,27 @@ app = WebViewWindow(
     background="#101418",
     attributes={"-topmost": False},
 )
+```
+
+## Toplevel Window Example
+
+You can open a child `Toplevel` window with the same configuration style:
+
+```python
+from webview_tkinter import WebViewWindow
+
+def receive_from_frontend(params):
+    if params and params[0] == "open-screen":
+        web_app.topLevel(
+            "tela1.html",
+            window_size=(900, 600),
+            title="Child window",
+        )
+    return "ok"
+
+web_app = WebViewWindow("index.html", window_size=(1280, 720), title="Main window")
+web_app.expose_function.receive("ping_python", receive_from_frontend)
+web_app.run()
 ```
 
 ## Send/Receive Bridge
